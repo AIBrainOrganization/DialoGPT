@@ -473,3 +473,12 @@ models/
 # docker/
 # prepro_v4.py
 # prepro.py
+#
+*.out
+*.tsv
+*.db
+*.tsv.gz
+reddit_extractor/data/keys/
+reddit_extractor/data/reddit/
+reddit_extractor/lists/files/
+

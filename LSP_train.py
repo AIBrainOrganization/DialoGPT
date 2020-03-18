@@ -1,5 +1,5 @@
-#  Copyright (c) Microsoft Corporation. 
-#  Licensed under the MIT license. 
+#  Copyright (c) Microsoft Corporation.
+#  Licensed under the MIT license.
 '''
  * @Desc: train GPT2 from scratch/ fine tuning.
           Modified based on Huggingface GPT-2 implementation
@@ -26,8 +26,14 @@ from gpt2_training.eval_utils import eval_model_loss
 
 from data_loader import BucketingDataLoader, DynamicBatchingLoader, DistributedBucketingDataLoader
 
-
 from gpt2_training.distributed import all_reduce_and_rescale_tensors, all_gather_list
+
+from kogpt2.pytorch_kogpt2 import get_pytorch_kogpt2_model
+from kogpt2.pytorch_kogpt2 import kogpt2_config as config
+from gluonnlp.data import SentencepieceTokenizer
+from kogpt2.utils import get_tokenizer
+
+from pytorch_memlab import MemReporter
 
 
 logging.basicConfig(
@@ -79,7 +85,8 @@ parser.add_argument("--no_token_id", type=boolean_string, default=True)
 
 parser.add_argument("--output_dir", type=str)
 parser.add_argument("--log_dir", type=str)
-parser.add_argument('--pbar', type=boolean_string, default=True, help='turn on progress bar')
+parser.add_argument('--pbar', type=boolean_string,
+                    default=True, help='turn on progress bar')
 
 # distributed
 parser.add_argument('--local_rank', type=int, default=-1,
@@ -91,26 +98,26 @@ parser.add_argument('--config', help='JSON config file')
 args = parser.parse_args()
 
 if args.config is not None:
-    # override argparse defaults by config JSON
-    opts = json.load(open(args.config))
-    for k, v in opts.items():
-        if isinstance(v, str):
-            # PHILLY ENV special cases
-            if 'PHILLY_JOB_DIRECTORY' in v:
-                v = v.replace('PHILLY_JOB_DIRECTORY',
-                              os.environ['PHILLY_JOB_DIRECTORY'])
-            elif 'PHILLY_LOG_DIRECTORY' in v:
-                v = v.replace('PHILLY_LOG_DIRECTORY',
-                              os.environ['PHILLY_LOG_DIRECTORY'])
-        setattr(args, k, v)
+  # override argparse defaults by config JSON
+  opts = json.load(open(args.config))
+  for k, v in opts.items():
+    if isinstance(v, str):
+      # PHILLY ENV special cases
+      if 'PHILLY_JOB_DIRECTORY' in v:
+        v = v.replace('PHILLY_JOB_DIRECTORY',
+                      os.environ['PHILLY_JOB_DIRECTORY'])
+      elif 'PHILLY_LOG_DIRECTORY' in v:
+        v = v.replace('PHILLY_LOG_DIRECTORY',
+                      os.environ['PHILLY_LOG_DIRECTORY'])
+    setattr(args, k, v)
 
-    # command line should override config JSON
-    argv = sys.argv[1:]
-    overrides, _ = parser.parse_known_args(argv)
-    for k, v in vars(overrides).items():
-        if f'--{k}' in argv:
-            setattr(args, k, v)
-    setattr(args, 'local_rank', overrides.local_rank)
+  # command line should override config JSON
+  argv = sys.argv[1:]
+  overrides, _ = parser.parse_known_args(argv)
+  for k, v in vars(overrides).items():
+    if f'--{k}' in argv:
+      setattr(args, k, v)
+  setattr(args, 'local_rank', overrides.local_rank)
 
 
 assert args.train_batch_size % args.gradient_accumulation_steps == 0, \
@@ -119,85 +126,97 @@ args.train_batch_size = (args.train_batch_size
                          // args.gradient_accumulation_steps)
 logger.info('train batch size = {}, '
             'new train batch size (after gradient accumulation) = {}'.format(
-                args.train_batch_size*args.gradient_accumulation_steps,
+                args.train_batch_size * args.gradient_accumulation_steps,
                 args.train_batch_size))
 
 
 if args.local_rank == -1:
-    logger.info('CUDA available? {}'.format(str(torch.cuda.is_available())))
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    n_gpu = torch.cuda.device_count()
-    args.device, args.n_gpu = device, n_gpu
+  logger.info('CUDA available? {}'.format(str(torch.cuda.is_available())))
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+  n_gpu = torch.cuda.device_count()
+  args.device, args.n_gpu = device, n_gpu
 else:
-    # distributed training
-    torch.cuda.set_device(args.local_rank)
-    device = torch.device("cuda", args.local_rank)
-    # Initializes the distributed backend which will take care of
-    # sychronizing nodes/GPUs
-    torch.distributed.init_process_group(backend='nccl')
-    n_gpu = torch.distributed.get_world_size()
-    args.device, args.n_gpu = device, 1
-    logger.info("device: {} n_gpu: {}, distributed training: {}, "
-                "16-bits training: {}".format(
-                    device, n_gpu, bool(args.local_rank != -1), args.fp16))
+  # distributed training
+  torch.cuda.set_device(args.local_rank)
+  device = torch.device("cuda", args.local_rank)
+  # Initializes the distributed backend which will take care of
+  # sychronizing nodes/GPUs
+  torch.distributed.init_process_group(backend='nccl')
+  n_gpu = torch.distributed.get_world_size()
+  args.device, args.n_gpu = device, 1
+  logger.info("device: {} n_gpu: {}, distributed training: {}, "
+              "16-bits training: {}".format(
+                  device, n_gpu, bool(args.local_rank != -1), args.fp16))
 
 np.random.seed(args.seed)
 torch.random.manual_seed(args.seed)
 torch.cuda.manual_seed(args.seed)
 if n_gpu > 0:
-    torch.cuda.manual_seed_all(args.seed)
+  torch.cuda.manual_seed_all(args.seed)
 
 timestamp = datetime.datetime.now().strftime('%Y-%m-%d%H%M%S')
 output_dir = join(args.output_dir,
                   'GPT2.{}.{}.{}gpu.{}'.format(args.learning_rate,
                                                args.train_batch_size, n_gpu,
                                                timestamp))
-log_dir = args.log_dir if args.log_dir is not None and len(args.log_dir) > 0 else output_dir
+log_dir = args.log_dir if args.log_dir is not None and len(
+    args.log_dir) > 0 else output_dir
 if args.local_rank == -1 or get_rank() == 0:
-    os.makedirs(output_dir, exist_ok=True)
+  os.makedirs(output_dir, exist_ok=True)
 
 logger.info('Input Argument Information')
 args_dict = vars(args)
 for a in args_dict:
-    logger.info('%-28s  %s' % (a, args_dict[a]))
+  logger.info('%-28s  %s' % (a, args_dict[a]))
 
 
 #########################################################################
 # Prepare Data Set
 ##########################################################################
-enc = GPT2Tokenizer.from_pretrained(args.model_name_or_path)
+# enc = GPT2Tokenizer.from_pretrained(args.model_name_or_path)
+tok_path = get_tokenizer()
+enc = SentencepieceTokenizer(tok_path)
+model, vocab = get_pytorch_kogpt2_model(0)
 
-config = GPT2Config.from_json_file(
-    join(args.model_name_or_path, 'config.json'))
+if args.fp16:
+  logger.info('in fp16, model.half() activated')
+  model.half()
+
+if args.n_gpu > 1:
+  logging.info('data parallel because more than one gpu')
+  model = torch.nn.DataParallel(model)
+
+# config = GPT2Config.from_json_file(
+#     join(args.model_name_or_path, 'config.json'))
 
 if args.local_rank == -1:
-    train_dataloader = BucketingDataLoader(args.train_input_file,
-                                           args.train_batch_size,
-                                           args.max_seq_length)
+  train_dataloader = BucketingDataLoader(args.train_input_file,
+                                         args.train_batch_size,
+                                         args.max_seq_length)
 else:
-    train_dataloader = DistributedBucketingDataLoader(
-        get_rank(), get_world_size(),
-        args.train_input_file, args.train_batch_size,
-        args.max_seq_length)
+  train_dataloader = DistributedBucketingDataLoader(
+      get_rank(), get_world_size(),
+      args.train_input_file, args.train_batch_size,
+      args.max_seq_length)
 
 eval_dataloader_loss = DynamicBatchingLoader(
-    args.eval_input_file, enc, args.normalize_data,
+    args.eval_input_file, enc, vocab, args.normalize_data,
     args.eval_batch_size, args.max_seq_length)
 
-eval_dataloader_gen = get_eval_list_same_length(
-    args.eval_input_file, enc, args.eval_batch_size, True)
+# eval_dataloader_gen = get_eval_list_same_length(
+#     args.eval_input_file, enc, args.eval_batch_size, True)
 
 
 #########################################################################
 # Prepare Model and Optimizer
 ##########################################################################
-model = load_model(GPT2LMHeadModel(config), args.init_checkpoint,
-                   args, verbose=True)
+# model = load_model(GPT2LMHeadModel(config), args.init_checkpoint,
+#                    args, verbose=True)
 if args.local_rank != -1:
-    # when from scratch make sure initial models are the same
-    params = [p.data for p in model.parameters()]
-    all_reduce_and_rescale_tensors(
-        params, float(torch.distributed.get_world_size()))
+  # when from scratch make sure initial models are the same
+  params = [p.data for p in model.parameters()]
+  all_reduce_and_rescale_tensors(
+      params, float(torch.distributed.get_world_size()))
 
 model_parameters = filter(lambda p: p.requires_grad, model.parameters())
 total_params = sum([np.prod(p.size()) for p in model_parameters])
@@ -214,173 +233,186 @@ optimizer_grouped_parameters = [
 ]
 
 if args.fp16:
-    logger.info('in fp16, using FusedAdam')
-    try:
-        from apex.optimizers import FP16_Optimizer
-        from apex.optimizers import FusedAdam
-    except ImportError:
-        raise ImportError(
-            "Please install apex from https://www.github.com/nvidia/apex "
-            "to use distributed and fp16 training.")
+  logger.info('in fp16, using FusedAdam')
+  try:
+    from apex.optimizers import FP16_Optimizer
+    from apex.optimizers import FusedAdam
+  except ImportError:
+    raise ImportError(
+        "Please install apex from https://www.github.com/nvidia/apex "
+        "to use distributed and fp16 training.")
 
-    optimizer = FusedAdam(optimizer_grouped_parameters,
-                          lr=args.learning_rate,
-                          bias_correction=False,
-                          max_grad_norm=1.0)
-    if args.loss_scale == 0:
-        optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True,
-                                   verbose=False)
-    else:
-        optimizer = FP16_Optimizer(optimizer,
-                                   static_loss_scale=args.loss_scale,
-                                   verbose=False)
+  optimizer = FusedAdam(optimizer_grouped_parameters,
+                        lr=args.learning_rate,
+                        bias_correction=False,
+                        max_grad_norm=1.0)
+  if args.loss_scale == 0:
+    optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True,
+                               verbose=False)
+  else:
+    optimizer = FP16_Optimizer(optimizer,
+                               static_loss_scale=args.loss_scale,
+                               verbose=False)
 else:
-    optimizer = Adam(optimizer_grouped_parameters, args.learning_rate,
-                     max_grad_norm=1.0)
+  optimizer = Adam(optimizer_grouped_parameters, args.learning_rate,
+                   max_grad_norm=1.0)
 
 #########################################################################
 # Training !
 ##########################################################################
 
 if args.local_rank == -1 or get_rank() == 0:
-    train_logger = open(join(log_dir, 'train_log.txt'), 'a+', buffering=1)
-    eval_logger = open(join(log_dir, 'eval_log.txt'), 'a+', buffering=1)
-    print('epoch,global_step,step,mean_loss,mean_ppl,n_token_real,'
-          'n_token_total,epoch_time', file=train_logger)
-    print('epoch,global_step,step,eval_loss,eval_ppl', file=eval_logger)
+  train_logger = open(join(log_dir, 'train_log.txt'), 'a+', buffering=1)
+  eval_logger = open(join(log_dir, 'eval_log.txt'), 'a+', buffering=1)
+  print('epoch,global_step,step,mean_loss,mean_ppl,n_token_real,'
+        'n_token_total,epoch_time', file=train_logger)
+  print('epoch,global_step,step,eval_loss,eval_ppl', file=eval_logger)
 
 global_step = 0
 step = 0
 epoch = 0
 
 if args.continue_from:
-    global_step = args.continue_from
-    step = global_step*2 - 1
+  global_step = args.continue_from
+  step = global_step * 2 - 1
 
 
 if args.local_rank != -1:
-    n_gpu = 1
+  n_gpu = 1
 if args.local_rank == -1 or get_rank() == 0:
-    if args.pbar:
-        pbar = tqdm.tqdm(total=args.num_optim_steps, desc=f"training")
-    else:
-        pbar = None
+  if args.pbar:
+    pbar = tqdm.tqdm(total=args.num_optim_steps, desc=f"training")
+  else:
+    pbar = None
+
+# logger.info("pdb-attach")
+# from pdb_clone import pdb
+# rsock = pdb.set_trace_remote()
+#
+# if rsock.state != rsock.ST_CONNECTED:
+#   input()
 
 while True:
-    model.train()
-    (tr_loss, tr_ppl, mean_ppl, nb_tr_examples, nb_tr_steps) = 0.0, 0.0, 0.0, 0, 0
-    n_token_real, n_token_total = 0, 0
-    train_start_time_epoch = time.time()
-    for batch in train_dataloader:
-        # activate new training mode
-        seq_len = batch[0].shape[1]
-        batch = tuple(t.to(device) for t in batch)
-        input_ids, position_ids, token_ids, label_ids, *_ = batch
-        if args.no_token_id:
-            token_ids = None
-        loss, ppl = model(input_ids, position_ids, token_ids, label_ids)
+  model.train()
+  (tr_loss, tr_ppl, mean_ppl, nb_tr_examples, nb_tr_steps) = 0.0, 0.0, 0.0, 0, 0
+  n_token_real, n_token_total = 0, 0
+  train_start_time_epoch = time.time()
 
-        if n_gpu > 1:
-            loss = loss.mean()
-            ppl = ppl.mean()
-        loss = loss / (args.train_batch_size / input_ids.shape[0])
-        if args.fp16:
-            optimizer.backward(loss)
-        else:
-            loss.backward()
+  for batch in train_dataloader:
+    # activate new training mode
+    seq_len = batch[0].shape[1]
+    batch = tuple(t.to(device) for t in batch)
+    input_ids, position_ids, token_ids, label_ids, *_ = batch
+    if args.no_token_id:
+      token_ids = None
+    loss, ppl = model(input_ids, position_ids=position_ids,
+                      token_type_ids=token_ids, labels=label_ids)
+    # loss, ppl = model(input_ids, labels=label_ids)
 
-        tr_loss += float(loss.item()) * (args.train_batch_size / input_ids.shape[0])
-        nb_tr_examples += input_ids.size(0)
-        nb_tr_steps += 1
-        mean_loss = tr_loss / nb_tr_steps
-        if ppl.item() < INF:
-            tr_ppl += ppl.item()
-        else:
-            tr_ppl += mean_ppl
-        mean_ppl = tr_ppl / nb_tr_steps
+    # reporter = MemReporter(model)
 
-        n_token_total += input_ids.shape[0] * input_ids.shape[1]
-        n_token_real += (input_ids != 0).sum().item()
+    if n_gpu > 1:
+      loss = loss.mean()
+      ppl = ppl.mean()
+    loss = loss / (args.train_batch_size / input_ids.shape[0])
+    if args.fp16:
+      optimizer.backward(loss)
+    else:
+      loss.backward()
 
-        # gradient update
-        step += 1
-        if step % args.gradient_accumulation_steps == 0:
-            set_lr(optimizer, global_step,
-                   args.lr_schedule, args.learning_rate,
-                   args.warmup_steps, args.warmup_proportion,
-                   config.n_embd, args.num_optim_steps)
+    tr_loss += float(loss.item()) * \
+        (args.train_batch_size / input_ids.shape[0])
+    nb_tr_examples += input_ids.size(0)
+    nb_tr_steps += 1
+    mean_loss = tr_loss / nb_tr_steps
+    if ppl.item() < INF:
+      tr_ppl += ppl.item()
+    else:
+      tr_ppl += mean_ppl
+    mean_ppl = tr_ppl / nb_tr_steps
 
-            if args.local_rank != -1:
-                grads = [p.grad.data for p in model.parameters()
-                         if p.requires_grad and p.grad is not None]
-                all_reduce_and_rescale_tensors(grads, float(1))
+    n_token_total += input_ids.shape[0] * input_ids.shape[1]
+    n_token_real += (input_ids != 0).sum().item()
 
-            optimizer.step()
-            optimizer.zero_grad()
-            global_step += 1
+    # gradient update
+    step += 1
+    if step % args.gradient_accumulation_steps == 0:
+      set_lr(optimizer, global_step,
+             args.lr_schedule, args.learning_rate,
+             args.warmup_steps, args.warmup_proportion,
+             config['n_embd'], args.num_optim_steps)
 
-            # Print log info to file
-            if args.local_rank != -1:
-                mean_loss = sum(all_gather_list(mean_loss)) / get_world_size()
-                mean_ppl = sum(all_gather_list(mean_ppl)) / get_world_size()
-                n_token_real_all_proc = sum(all_gather_list(n_token_real))
-                n_token_total_all_proc = sum(all_gather_list(n_token_total))
-            else:
-                n_token_real_all_proc = n_token_real
-                n_token_total_all_proc = n_token_total
+      if args.local_rank != -1:
+        grads = [p.grad.data for p in model.parameters()
+                 if p.requires_grad and p.grad is not None]
+        all_reduce_and_rescale_tensors(grads, float(1))
 
-            if args.local_rank == -1 or get_rank() == 0:
-                epoch_time = time.time() - train_start_time_epoch
-                if pbar is not None:
-                    pbar.set_postfix_str(
-                        f"tok/s: {n_token_real_all_proc//epoch_time//1000}k "
-                        f"ppl: {mean_ppl:.2f} epoch: {epoch}")
-                    pbar.update(1)
-                print('{},{},{},{},{},{},{},{}'.format(
-                    epoch+1, global_step+1, step+1, mean_loss, mean_ppl,
-                    n_token_real_all_proc, n_token_total_all_proc, epoch_time),
-                    file=train_logger)
+      optimizer.step()
+      optimizer.zero_grad()
+      global_step += 1
 
-            if global_step % args.valid_step == 0:
-                if args.local_rank == -1 or get_rank() == 0:
-                    # only rank 0 process evaluate
-                    torch.save(
-                        {k: (v.cpu() if v is not None else None)  # save to cpu tensors
-                         for k, v in model.state_dict().items()},
-                        join(output_dir,
-                             f'GP2-pretrain-step-{global_step}.pkl'))
+      # Print log info to file
+      if args.local_rank != -1:
+        mean_loss = sum(all_gather_list(mean_loss)) / get_world_size()
+        mean_ppl = sum(all_gather_list(mean_ppl)) / get_world_size()
+        n_token_real_all_proc = sum(all_gather_list(n_token_real))
+        n_token_total_all_proc = sum(all_gather_list(n_token_total))
+      else:
+        n_token_real_all_proc = n_token_real
+        n_token_total_all_proc = n_token_total
 
-                    eval_loss, eval_ppl = eval_model_loss(
-                        model, enc, eval_dataloader_loss, epoch, args)
-                    # enable generation step evaluation for now
-                    # gen_response = eval_model_generation(
-                    #     model, enc, eval_dataloader_gen, epoch, args)
-                    '''
+      if args.local_rank == -1 or get_rank() == 0:
+        epoch_time = time.time() - train_start_time_epoch
+        if pbar is not None:
+          pbar.set_postfix_str(
+              f"tok/s: {n_token_real_all_proc//epoch_time//1000}k "
+              f"ppl: {mean_ppl:.2f} epoch: {epoch}")
+          pbar.update(1)
+        print('{},{},{},{},{},{},{},{}'.format(
+            epoch + 1, global_step + 1, step + 1, mean_loss, mean_ppl,
+            n_token_real_all_proc, n_token_total_all_proc, epoch_time),
+            file=train_logger)
+
+      if global_step % args.valid_step == 0:
+        if args.local_rank == -1 or get_rank() == 0:
+          # only rank 0 process evaluate
+          torch.save(
+              {k: (v.cpu() if v is not None else None)  # save to cpu tensors
+               for k, v in model.state_dict().items()},
+              join(output_dir,
+                   f'GP2-pretrain-step-{global_step}.pkl'))
+
+          eval_loss, eval_ppl = eval_model_loss(
+              model, enc, eval_dataloader_loss, epoch, args)
+          # enable generation step evaluation for now
+          # gen_response = eval_model_generation(
+          #     model, enc, eval_dataloader_gen, epoch, args)
+          '''
                     # probably use beam search only for test set
                     if False:
                         gen_response_beam = eval_model_generation(
                             model, enc, eval_dataloader_gen, epoch, args,
                             use_beam_search=True, beam_width=3)
                     '''
-                    print('{},{},{},{},{}'.format(
-                        epoch+1, global_step+1, step+1, eval_loss, eval_ppl),
-                        file=eval_logger)
-                    logger.info('current learning rate: '
-                                + str(optimizer.param_groups[0]['lr']))
-                    model.train()
-            if global_step >= args.num_optim_steps:
-                break
-
-        if (step+1) % CACHE_EMPTY_STEP == 0:
-            torch.cuda.empty_cache()
-
-    if global_step >= args.num_optim_steps:
+          print('{},{},{},{},{}'.format(
+              epoch + 1, global_step + 1, step + 1, eval_loss, eval_ppl),
+              file=eval_logger)
+          logger.info('current learning rate: '
+                      + str(optimizer.param_groups[0]['lr']))
+          model.train()
+      if global_step >= args.num_optim_steps:
         break
-    epoch += 1
+
+    if (step + 1) % CACHE_EMPTY_STEP == 0:
+      torch.cuda.empty_cache()
+
+  if global_step >= args.num_optim_steps:
+    break
+  epoch += 1
 
 
 if args.local_rank == -1 or get_rank() == 0:
-    if pbar is not None:
-        pbar.close()
-    train_logger.close()
-    eval_logger.close()
+  if pbar is not None:
+    pbar.close()
+  train_logger.close()
+  eval_logger.close()
