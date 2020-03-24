@@ -21,11 +21,15 @@ def create_rows(xlsxes):
   r = []
   conv_id = 0
   for xlsx in xlsxes:
+    firstSSeen = False
     wb = load_workbook(xlsx)
     ws = wb.active
     for i, row in enumerate(tqdm(ws.rows)):
-      if i == 0:
-        continue
+      if not firstSSeen:
+        if row[0].value == 'S':
+          firstSSeen = True
+        else:
+          continue
 
       if row[0].value == "S":
         if r:
@@ -55,11 +59,14 @@ def create_rows(xlsxes):
 
 
 def main():
-  xlsxes = ['/home/calee/git/cc/data/KoMultiEmo20190226/'
+  xlsxes = ['/home/calee/git/cc/data/KoMulti20200320/'
             'OpenSubwithemotion2018.xlsx',
-            '/home/calee/git/cc/data/KoMultiEmo20190226/'
-            'acryl_korean_190226.xlsx']
+            '/home/calee/git/cc/data/KoMulti20200320/'
+            'acryl_korean_190226_unique.xlsx',
+            '/home/calee/git/cc/data/KoMulti20200320/'
+            'acryl_korean_180504.xlsx']
   rows = create_rows(xlsxes)
+
   filtered = [filter_rows(r) for r in rows]
 
   df = [pd.DataFrame(f) for f in filtered]

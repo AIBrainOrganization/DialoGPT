@@ -176,7 +176,13 @@ for a in args_dict:
 # enc = GPT2Tokenizer.from_pretrained(args.model_name_or_path)
 tok_path = get_tokenizer()
 enc = SentencepieceTokenizer(tok_path)
-model, vocab = get_pytorch_kogpt2_model(0)
+if args.init_checkpoint is None:
+  model, vocab = get_pytorch_kogpt2_model(0)
+else:
+  VOCAB_PATH = '/home/calee/kogpt2/kogpt2_news_wiki_ko_cased_818bfa919d.spiece'
+  model_path = args.init_checkpoint
+  from kogpt2.pytorch_kogpt2 import get_kogpt2_model
+  model, vocab = get_kogpt2_model(model_path, VOCAB_PATH, 0)
 
 if args.fp16:
   logger.info('in fp16, model.half() activated')
@@ -281,7 +287,8 @@ if args.local_rank != -1:
   n_gpu = 1
 if args.local_rank == -1 or get_rank() == 0:
   if args.pbar:
-    pbar = tqdm.tqdm(total=args.num_optim_steps, desc=f"training")
+    pbar = tqdm.tqdm(initial=global_step,
+                     total=args.num_optim_steps, desc=f"training")
   else:
     pbar = None
 

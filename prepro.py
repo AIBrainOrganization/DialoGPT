@@ -26,6 +26,8 @@ from kogpt2.pytorch_kogpt2 import get_pytorch_kogpt2_model
 from gluonnlp.data import SentencepieceTokenizer
 from kogpt2.utils import get_tokenizer
 
+import pandas as pd
+
 
 def _get_file_len(corpus):
   n_line = int(sp.check_output(f"wc -l {corpus}".split(),
@@ -44,7 +46,7 @@ def _norm_text(text):
 
 
 def _get_inputs_from_text(text, tokenizer, vocab):
-  srcs, tgt = text.strip().split('\t')
+  srcs, tgt = text
   weights = []
   inputs = []
   for src in srcs.split(' EOS '):
@@ -67,6 +69,7 @@ def _make_features(id_, weights, inputs, tokenizer, vocab, max_len):
   ws = []
   len_ = 0
   i = 0
+
   for ids, w in zip(inputs, weights):
     if len(ids) > max_len:
       if len(sents) >= 2:
@@ -168,12 +171,21 @@ def main(args):
     raise ValueError('Found existing DB, please backup')
   else:
     os.makedirs(dirname(db_path))
-  with open(args.corpus, "r", encoding="utf-8") as reader, \
-          shelve.open(db_path, 'n') as db:
+  with shelve.open(db_path, 'n') as db:
+    # reader = open(args.corpus, "r", encoding="utf-8")
+    reader = pd.read_csv(args.corpus, sep='\t', header=None)
     chunk = []
     n_chunk = 0
     n_example = 0
-    for line in tqdm(reader, total=_get_file_len(args.corpus)):
+
+    # print("pdb-attach")
+    # from pdb_clone import pdb
+    # rsock = pdb.set_trace_remote()
+    #
+    # if rsock.state != rsock.ST_CONNECTED:
+    #   input()
+
+    for _, line in tqdm(reader.iterrows()):
       try:
         if len(chunk) >= args.chunk_size:
           # save and renew chunk
