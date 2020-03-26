@@ -33,7 +33,7 @@ from kogpt2.pytorch_kogpt2 import kogpt2_config as config
 from gluonnlp.data import SentencepieceTokenizer
 from kogpt2.utils import get_tokenizer
 
-from pytorch_memlab import MemReporter
+# from pytorch_memlab import MemReporter
 
 
 logging.basicConfig(
