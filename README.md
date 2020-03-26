@@ -50,3 +50,6 @@ data/valid.200len.db
 ```bash
 bash run.sh
 ```
+
+## Speed Up
+To speed up, install apex, and change the option fp16 to true and gradient_accumulation_steps to 8 on run.sh.
