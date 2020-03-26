@@ -43,8 +43,8 @@ pip install .
 
 
 6. Copy files  
-data/train.200len.db
-data/valid.200len.db
+data/train.200len.db  
+data/valid.200len.db  
 
 ## Training
 ```bash
