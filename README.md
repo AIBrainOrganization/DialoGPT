@@ -1,7 +1,7 @@
 ## Requirements
 You may be able to use the library without this requirements, but the library is tested only from the below environment.
-- One or more Titan V graphics cards (driver should be installed)
-- Ubuntu 18.04.4 LTS
+- One or more Titan V or GeForce GTX 1080 Ti graphics cards (driver should be installed)
+- Ubuntu 18.04.4 LTS or CentOS 7
 
 ## Installation
 1. Install Anaconda  
