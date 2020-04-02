@@ -3,11 +3,14 @@ import torch
 import torch.nn.functional as F
 
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config
-from config import device_f, device_r, num_samples, MMI_temperature, top_k
+from config import device_f, device_r, num_samples
+from config import MMI_temperature, top_k, top_p, ALPHA
 from kogpt2.pytorch_kogpt2 import get_kogpt2_model
 from kogpt2.pytorch_kogpt2 import get_pytorch_kogpt2_model
 from gluonnlp.data import SentencepieceTokenizer
 from kogpt2.utils import get_tokenizer
+
+PADDING_TOKEN = 0
 
 torch.set_grad_enabled(False)
 
@@ -26,12 +29,13 @@ if device_f == 'cuda':
 model.to(device_f)
 model.eval()
 
-# REVERSE_MODEL_PATH = ''
-# reverse_model, _ = get_kogpt2_model(REVERSE_MODEL_PATH, VOCAB_PATH, 0)
-# if device_r == 'cuda':
-#   reverse_model.half()
-# reverse_model.to(device_r)
-# reverse_model.eval()
+REVERSE_MODEL_PATH = '/home/calee/git/DialoGPT/models/output_model/' \
+    'GPT2.1e-05.64.2gpu.2020-03-26162233/GP2-pretrain-step-8704.pkl'
+reverse_model, _ = get_kogpt2_model(REVERSE_MODEL_PATH, VOCAB_PATH, 0)
+if device_r == 'cuda':
+  reverse_model.half()
+reverse_model.to(device_r)
+reverse_model.eval()
 
 
 end_token = torch.tensor([[vocab[vocab.eos_token]]], dtype=torch.long)
@@ -40,6 +44,7 @@ end_token = torch.tensor([[vocab[vocab.eos_token]]], dtype=torch.long)
 def _get_response(output_token, past):
   out = torch.tensor([[]], dtype=torch.long, device=device_f)
 
+  # check model.generate exist and working!!!
   while True:
     output_token, past = model.forward(output_token, past=past)
     output_token = output_token[:, -1, :].float()
@@ -57,16 +62,20 @@ def _get_response(output_token, past):
   return out, past
 
 
-def _score_response(output_token, correct_token):
-  return 0
+def _score_response(input, input_reversed, output):
+  output_reversed = output.to(device_r)
+  inputs = torch.cat((input, output[:, :-1]), dim=1)
+  inputs_reversed = torch.cat((output_reversed, input_reversed[:, :-1]), dim=1)
+  mask = torch.full_like(input[:, :-1], -1, dtype=torch.long)
+  labels = torch.cat((mask, output), dim=1)
+  mask_reversed = torch.full_like(
+      output_reversed[:, :-1], -1, dtype=torch.long)
+  labels_reversed = torch.cat((mask_reversed, input_reversed), dim=1)
 
-  # inputs = torch.cat((output_token, correct_token), dim=1)
-  # mask = torch.full_like(output_token, -1, dtype=torch.long)
-  # labels = torch.cat((mask, correct_token), dim=1)
-  #
-  # loss, _, _ = reverse_model(inputs, labels=labels)
-  #
-  # return -loss.float()
+  loss, *_ = model(inputs, labels=labels)
+  reverse_loss, *_ = reverse_model(inputs_reversed, labels=labels_reversed)
+
+  return -(ALPHA * loss.float() + (1 - ALPHA) * reverse_loss.float())
 
 
 def append_messages(old_list: list, new_list: list, truncate_length=64):
@@ -87,12 +96,19 @@ def append_messages(old_list: list, new_list: list, truncate_length=64):
       old_list[:] = old_list[-i:]
 
 
-def decode(ids):
+def decode(ids, skip_special_tokens=True):
   gen = vocab.to_tokens(ids)
   sent = ''
-  for word in gen[:-1]:
+  for word in gen:
     word = word.replace('▁', ' ')
-    word = word.replace('<unk>', '')
+    word = word.replace(' !', '!')
+    word = word.replace(' .', '.')
+    word = word.replace(' ?', '?')
+    word = word.replace(' ,', ',')
+    if skip_special_tokens:
+      word = word.replace('<unk>', '')
+      word = word.replace('<s>', '')
+      word = word.replace('</s>', '')
     sent += word
   return sent[1:]
 
@@ -104,27 +120,38 @@ def generate_message(message_list: list, focus_last_message=True):
   else:
     total_input_reversed = torch.cat(list(reversed(message_list)), dim=1)
 
-  past = None
-  if total_input.shape[1] > 1:
-    _, past = model(total_input[:, :-1])
+  outputs = model.generate(input_ids=total_input,
+                           min_length=total_input.shape[1] + 8,
+                           max_length=total_input.shape[1] + 40,
+                           num_return_sequences=num_samples,
+                           top_k=top_k,
+                           top_p=top_p,
+                           do_sample=True,
+                           repetition_penalty=1.2,
+                           pad_token_id=PADDING_TOKEN,
+                           eos_token_id=vocab[vocab.eos_token])
+  outputs = outputs[:, total_input.shape[1]:]
 
-  # results = []
-  # for i in range(num_samples):
-  #   result = _get_response(total_input[:, -1:], past)
-  #   score = _score_response(result[0].to(
-  #       device_r), total_input_reversed.to(device_r))
-  #   results.append(result + (score,))
-  #
-  # scores = torch.stack([x[2] for x in results], dim=0)
+  scores = []
+  for output in outputs:
+    output = output.unsqueeze(0).to(device_f)
+    try:
+      output = output[:, :output[0].tolist().index(vocab[vocab.eos_token]) + 1]
+    except:
+      pass
+    scores.append(_score_response(
+        total_input, total_input_reversed.to(device_r), output))
+  scores = torch.stack(scores, dim=0)
+
+  # import pdb
+  # pdb.set_trace()
+
   # winner = torch.multinomial(
   #     F.softmax(scores / MMI_temperature, dim=0), num_samples=1).item()
-  # # winner = torch.argmax(scores, dim=0)
-  #
-  # out = results[winner][0]
+  winner = torch.argmax(scores).item()
+  out = outputs[winner]
 
-  out, _ = _get_response(total_input[:, -1:], past)
-
-  return decode(out.tolist()[0])
+  return decode(out.tolist())
 
 
 if __name__ == '__main__':
@@ -132,6 +159,6 @@ if __name__ == '__main__':
   while True:
     my_message = input('usr >> ')
     append_messages(my_message_list, [my_message])
-    my_response = generate_message(my_message_list)
+    my_response = generate_message(my_message_list, False)
     print('bot >>', my_response)
     append_messages(my_message_list, [my_response])
