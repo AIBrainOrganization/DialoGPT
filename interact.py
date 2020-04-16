@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config
 from config import device_f, device_r, num_samples
-from config import MMI_temperature, top_k, top_p, ALPHA
+from config import top_k, top_p, ALPHA
 from kogpt2.pytorch_kogpt2 import get_kogpt2_model
 from kogpt2.pytorch_kogpt2 import get_pytorch_kogpt2_model
 from gluonnlp.data import SentencepieceTokenizer
