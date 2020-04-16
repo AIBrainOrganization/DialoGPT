@@ -1,4 +1,5 @@
 import torch
+import argparse
 
 import torch.nn.functional as F
 
@@ -18,51 +19,53 @@ tok_path = get_tokenizer()
 tokenizer = SentencepieceTokenizer(tok_path)
 
 
-VOCAB_PATH = '/home/calee/kogpt2/kogpt2_news_wiki_ko_cased_818bfa919d.spiece'
-MODEL_PATH = '/home/calee/git/DialoGPT/models/output_model/' \
-    'GPT2.1e-05.64.2gpu.2020-03-24160510/GP2-pretrain-step-20672.pkl'
+def load(vocab_path, model_path, reverse_path):
+  # VOCAB_PATH = '/home/calee/kogpt2/kogpt2_news_wiki_ko_cased_818bfa919d.spiece'
+  # MODEL_PATH = '/home/calee/git/DialoGPT/models/output_model/' \
+  #     'GPT2.1e-05.64.2gpu.2020-03-24160510/GP2-pretrain-step-20672.pkl'
 
-model, vocab = get_kogpt2_model(MODEL_PATH, VOCAB_PATH, 0)
+  model, vocab = get_kogpt2_model(model_path, vocab_path, 0)
 
-if device_f == 'cuda':
-  model.half()
-model.to(device_f)
-model.eval()
+  if device_f == 'cuda':
+    model.half()
+  model.to(device_f)
+  model.eval()
 
-REVERSE_MODEL_PATH = '/home/calee/git/DialoGPT/models/output_model/' \
-    'GPT2.1e-05.64.2gpu.2020-03-26162233/GP2-pretrain-step-8704.pkl'
-reverse_model, _ = get_kogpt2_model(REVERSE_MODEL_PATH, VOCAB_PATH, 0)
-if device_r == 'cuda':
-  reverse_model.half()
-reverse_model.to(device_r)
-reverse_model.eval()
+  # REVERSE_MODEL_PATH = '/home/calee/git/DialoGPT/models/output_model/' \
+  #     'GPT2.1e-05.64.2gpu.2020-03-26162233/GP2-pretrain-step-8704.pkl'
+  reverse_model, _ = get_kogpt2_model(reverse_path, vocab_path, 0)
+  if device_r == 'cuda':
+    reverse_model.half()
+  reverse_model.to(device_r)
+  reverse_model.eval()
 
+  end_token = torch.tensor([[vocab[vocab.eos_token]]], dtype=torch.long)
 
-end_token = torch.tensor([[vocab[vocab.eos_token]]], dtype=torch.long)
-
-
-def _get_response(output_token, past):
-  out = torch.tensor([[]], dtype=torch.long, device=device_f)
-
-  # check model.generate exist and working!!!
-  while True:
-    output_token, past = model.forward(output_token, past=past)
-    output_token = output_token[:, -1, :].float()
-    indices_to_remove = output_token < torch.topk(output_token, top_k)[
-        0][..., -1, None]
-    output_token[indices_to_remove] = -float('Inf')
-    output_token = torch.multinomial(
-        F.softmax(output_token, dim=-1), num_samples=1)
-
-    out = torch.cat((out, output_token), dim=1)
-
-    if output_token.item() == end_token.item():
-      break
-
-  return out, past
+  return vocab, model, reverse_model, end_token
 
 
-def _score_response(input, input_reversed, output):
+# def _get_response(output_token, past, end_token):
+#   out = torch.tensor([[]], dtype=torch.long, device=device_f)
+#
+#   # check model.generate exist and working!!!
+#   while True:
+#     output_token, past = model.forward(output_token, past=past)
+#     output_token = output_token[:, -1, :].float()
+#     indices_to_remove = output_token < torch.topk(output_token, top_k)[
+#         0][..., -1, None]
+#     output_token[indices_to_remove] = -float('Inf')
+#     output_token = torch.multinomial(
+#         F.softmax(output_token, dim=-1), num_samples=1)
+#
+#     out = torch.cat((out, output_token), dim=1)
+#
+#     if output_token.item() == end_token.item():
+#       break
+#
+#   return out, past
+
+
+def _score_response(input, input_reversed, output, model, reverse_model):
   output_reversed = output.to(device_r)
   inputs = torch.cat((input, output[:, :-1]), dim=1)
   inputs_reversed = torch.cat((output_reversed, input_reversed[:, :-1]), dim=1)
@@ -78,7 +81,8 @@ def _score_response(input, input_reversed, output):
   return -(ALPHA * loss.float() + (1 - ALPHA) * reverse_loss.float())
 
 
-def append_messages(old_list: list, new_list: list, truncate_length=64):
+def append_messages(old_list: list, new_list: list, vocab, end_token,
+                    truncate_length=64):
   for message in new_list:
     if message != '':
       input_token = torch.tensor([vocab[tokenizer(message)]], dtype=torch.long)
@@ -96,7 +100,7 @@ def append_messages(old_list: list, new_list: list, truncate_length=64):
       old_list[:] = old_list[-i:]
 
 
-def decode(ids, skip_special_tokens=True):
+def decode(ids, vocab, skip_special_tokens=True):
   gen = vocab.to_tokens(ids)
   sent = ''
   for word in gen:
@@ -113,7 +117,8 @@ def decode(ids, skip_special_tokens=True):
   return sent[1:]
 
 
-def generate_message(message_list: list, focus_last_message=True):
+def generate_message(message_list: list, model, reverse_model, vocab,
+                     focus_last_message=True):
   total_input = torch.cat(message_list, dim=1).to(device_f)
   if focus_last_message:
     total_input_reversed = message_list[-1]
@@ -140,7 +145,8 @@ def generate_message(message_list: list, focus_last_message=True):
     except:
       pass
     scores.append(_score_response(
-        total_input, total_input_reversed.to(device_r), output))
+        total_input, total_input_reversed.to(device_r), output,
+        model, reverse_model))
   scores = torch.stack(scores, dim=0)
 
   # import pdb
@@ -151,14 +157,35 @@ def generate_message(message_list: list, focus_last_message=True):
   winner = torch.argmax(scores).item()
   out = outputs[winner]
 
-  return decode(out.tolist())
+  return decode(out.tolist(), vocab)
 
 
 if __name__ == '__main__':
-  my_message_list = []
+  parser = argparse.ArgumentParser(
+      description='Interact with the model.')
+  parser.add_argument('vocab_path', metavar='vocab_path', type=str,
+                      help='Vocabulary path')
+  parser.add_argument('model_path', metavar='model_path',
+                      type=str, help='Model path')
+  parser.add_argument('reverse_model_path', metavar='reverse_model_path',
+                      type=str, help='Reverse model path')
+
+  args = parser.parse_args()
+
+  # 사전, 모델 파일 및 end_token을 불러옵니다.
+  vocab, model, reverse_model, end_token = load(
+      args.vocab_path, args.model_path, args.reverse_model_path)
+
+  my_message_list = []  # 대화 히스토리 리스트
   while True:
     my_message = input('usr >> ')
-    append_messages(my_message_list, [my_message])
-    my_response = generate_message(my_message_list, False)
+    # 대화 히스토리에 사용자가 입력한 내용을 추가합니다.
+    append_messages(my_message_list, [my_message], vocab, end_token)
+
+    # 대화 히스토리를 바탕으로 답변을 생성합니다.
+    my_response = generate_message(
+        my_message_list, model, reverse_model, vocab, False)
     print('bot >>', my_response)
-    append_messages(my_message_list, [my_response])
+
+    # 답변을 대화 히스토리에 추가합니다.
+    append_messages(my_message_list, [my_response], vocab, end_token)

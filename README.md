@@ -51,5 +51,10 @@ data/valid.200len.db
 bash run.sh
 ```
 
+## Test
+```bash
+python interact.py {vocab_path} {model_path} {reverse_model_path}
+```
+
 ## Speed Up
 To speed up, install apex, and change the option fp16 to true and gradient_accumulation_steps to 8 on run.sh.
