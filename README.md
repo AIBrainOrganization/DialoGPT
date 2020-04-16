@@ -29,7 +29,7 @@ git clone http://EmoCA.kaist.ac.kr/calee/DialoGPT.git
 4. Create and activate conda environment  
 ```bash
 cd DialoGPT
-conda create -f LSP-linux.yml -n LSP
+conda env create -f LSP-linux.yml -n LSP
 conda activate LSP
 ```
 
