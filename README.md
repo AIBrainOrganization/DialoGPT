@@ -137,12 +137,14 @@ python interact.py {vocab_path} {model_path} {reverse_model_path}
 * Path: /
 * Port: 5000
 * Method: get
+
 |Parameter|Type|Description|
 |---|---|---|
 |utext|string|Input text|
 |emotion|integer|Input emotion (Happiness: 10001, Anger: 10002, Disgust: 10003, Fear: 10004, Neutral: 10005, Sadness: 10006, Surprise: 10007)|
 |uid|string|ID of the dialogue context (any unique string for each dialogue)|
 * Response
+
 ```
 {"text": "야구를 정말 좋아하는 사람은 나야.", "emotion": 10005}
 ```
