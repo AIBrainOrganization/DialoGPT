@@ -9,7 +9,7 @@
 감정과 대화를 입력으로 받아서 답변을 생성합니다.
 
 * 시스템/SW 대표 그림
-![대화 시스템 대표 그림](imgs/system.png)
+![대화 시스템 대표 그림](img/system.png)
 
 ## How to Install
 1. Clone DialoGPT  
@@ -36,7 +36,7 @@ bash run.sh
 * Docker
 
 ## Network Architecture and features
-![Network Architecture](imgs/architecture.png)
+![Network Architecture](img/architecture.png)
 * **Model:**
 * The model is able to do language modeling.
 * **Masked Self-Attention:**
