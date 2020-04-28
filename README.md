@@ -55,9 +55,9 @@ wget "localhost:5000/?utext=%EB%82%98%EB%8A%94%20%EC%95%BC%EA%B5%AC%EB%A5%BC%20%
 ```
 * Response  
 
-> ```
-> {"text": "야구를 정말 좋아하는 사람은 나야.", "emotion": 10005}
-> ```
+```
+{"text": "야구를 정말 좋아하는 사람은 나야.", "emotion": 10005}
+```
 
 ## Training Data
 * Opensubtitles v2018 ko
