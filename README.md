@@ -48,7 +48,7 @@ bash run.sh
 ## Quick start
 * See How to Install to install
 * Use any http client to get a response  
-ex)
+ex)  
 ```bash
 wget "localhost:5000/?utext=%EB%82%98%EB%8A%94%20%EC%95%BC%EA%B5%AC%EB%A5%BC%20%EC%A2%8B%EC%95%84%ED%95%B4.&emotion=10001&uid=1"
 ```
