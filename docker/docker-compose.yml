@@ -1,0 +1,11 @@
+version: "2"
+services:
+  app:
+    container_name: dialogue-system
+    build:
+      context: ../..
+      dockerfile: DialoGPT/docker/Dockerfile
+    ports:
+      - "5005:5000"
+    volumes:
+      - ..:/git/DialoGPT
