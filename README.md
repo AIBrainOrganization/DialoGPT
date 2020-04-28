@@ -20,10 +20,10 @@ git clone http://EmoCA.kaist.ac.kr/calee/DialoGPT.git
 2. Install Docker
 
 3. Prepare vocab, and normal and reverse models  
-* Contact calee@aibrain.co.kr to get files
+   * Contact calee@aibrain.co.kr to get files
 
 4. Set paths from config.py file  
-* The paths should be relative to DialoGPT directory
+   * The paths should be relative to DialoGPT directory
 
 5. Change directory to DialoGPT/docker
 
