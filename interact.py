@@ -15,15 +15,14 @@ PADDING_TOKEN = 0
 
 torch.set_grad_enabled(False)
 
+# 토크나이저를 불러옵니다.
 tok_path = get_tokenizer()
 tokenizer = SentencepieceTokenizer(tok_path)
 
 
+# 사전, 모델, 리버스 모델을 불러옵니다.
 def load(vocab_path, model_path, reverse_path):
-  # VOCAB_PATH = '/home/calee/kogpt2/kogpt2_news_wiki_ko_cased_818bfa919d.spiece'
-  # MODEL_PATH = '/home/calee/git/DialoGPT/models/output_model/' \
-  #     'GPT2.1e-05.64.2gpu.2020-03-24160510/GP2-pretrain-step-20672.pkl'
-
+  # 모델과 사전을 불러옵니다.
   model, vocab = get_kogpt2_model(model_path, vocab_path, 0)
 
   if device_f == 'cuda':
@@ -31,8 +30,7 @@ def load(vocab_path, model_path, reverse_path):
   model.to(device_f)
   model.eval()
 
-  # REVERSE_MODEL_PATH = '/home/calee/git/DialoGPT/models/output_model/' \
-  #     'GPT2.1e-05.64.2gpu.2020-03-26162233/GP2-pretrain-step-8704.pkl'
+  # 리버스 모델을 불러옵니다.
   reverse_model, _ = get_kogpt2_model(reverse_path, vocab_path, 0)
   if device_r == 'cuda':
     reverse_model.half()
@@ -44,28 +42,9 @@ def load(vocab_path, model_path, reverse_path):
   return vocab, model, reverse_model, end_token
 
 
-# def _get_response(output_token, past, end_token):
-#   out = torch.tensor([[]], dtype=torch.long, device=device_f)
-#
-#   # check model.generate exist and working!!!
-#   while True:
-#     output_token, past = model.forward(output_token, past=past)
-#     output_token = output_token[:, -1, :].float()
-#     indices_to_remove = output_token < torch.topk(output_token, top_k)[
-#         0][..., -1, None]
-#     output_token[indices_to_remove] = -float('Inf')
-#     output_token = torch.multinomial(
-#         F.softmax(output_token, dim=-1), num_samples=1)
-#
-#     out = torch.cat((out, output_token), dim=1)
-#
-#     if output_token.item() == end_token.item():
-#       break
-#
-#   return out, past
-
-
+# 각 답변의 점수를 계산합니다.
 def _score_response(input, input_reversed, output, model, reverse_model):
+  # input, label, mask를 준비합니다.
   output_reversed = output.to(device_r)
   inputs = torch.cat((input, output[:, :-1]), dim=1)
   inputs_reversed = torch.cat((output_reversed, input_reversed[:, :-1]), dim=1)
@@ -75,16 +54,20 @@ def _score_response(input, input_reversed, output, model, reverse_model):
       output_reversed[:, :-1], -1, dtype=torch.long)
   labels_reversed = torch.cat((mask_reversed, input_reversed), dim=1)
 
+  # 점수로 활용될 loss 값을 계산합니다.
   loss, *_ = model(inputs, labels=labels)
   reverse_loss, *_ = reverse_model(inputs_reversed, labels=labels_reversed)
 
+  # ALPHA 값으로 비중을 주고 loss를 점수로 변경하기 위해 -1을 곱해줍니다.
   return -(ALPHA * loss.float() + (1 - ALPHA) * reverse_loss.float())
 
 
+# 히스토리에 새 문장을 추가해줍니다.
 def append_messages(old_list: list, new_list: list, vocab, end_token,
                     truncate_length=64):
   for message in new_list:
     if message != '':
+      # 문장을 tokenizing합니다.
       input_token = torch.tensor([vocab[tokenizer(message)]], dtype=torch.long)
       input_token = torch.cat((input_token, end_token), dim=1)
       old_list.append(input_token)
@@ -100,6 +83,7 @@ def append_messages(old_list: list, new_list: list, vocab, end_token,
       old_list[:] = old_list[-i:]
 
 
+# 생성된 token들을 문장으로 바꿔줍니다.
 def decode(ids, vocab, skip_special_tokens=True):
   gen = vocab.to_tokens(ids)
   sent = ''
@@ -117,6 +101,7 @@ def decode(ids, vocab, skip_special_tokens=True):
   return sent[1:]
 
 
+# 답변 문장을 생성합니다.
 def generate_message(message_list: list, model, reverse_model, vocab,
                      focus_last_message=True):
   total_input = torch.cat(message_list, dim=1).to(device_f)
@@ -125,6 +110,8 @@ def generate_message(message_list: list, model, reverse_model, vocab,
   else:
     total_input_reversed = torch.cat(list(reversed(message_list)), dim=1)
 
+  # https://huggingface.co/transformers/main_classes/model.html?highlight=generate#transformers.PreTrainedModel.generate
+  # 후보 답변 문장들을 생성합니다.
   outputs = model.generate(input_ids=total_input,
                            min_length=total_input.shape[1] + 8,
                            max_length=total_input.shape[1] + 40,
@@ -137,6 +124,7 @@ def generate_message(message_list: list, model, reverse_model, vocab,
                            eos_token_id=vocab[vocab.eos_token])
   outputs = outputs[:, total_input.shape[1]:]
 
+  # 각 문장에 대해 점수를 계산합니다.
   scores = []
   for output in outputs:
     output = output.unsqueeze(0).to(device_f)
@@ -149,11 +137,7 @@ def generate_message(message_list: list, model, reverse_model, vocab,
         model, reverse_model))
   scores = torch.stack(scores, dim=0)
 
-  # import pdb
-  # pdb.set_trace()
-
-  # winner = torch.multinomial(
-  #     F.softmax(scores / MMI_temperature, dim=0), num_samples=1).item()
+  # 가장 점수가 높은 문장을 선택합니다.
   winner = torch.argmax(scores).item()
   out = outputs[winner]
 
