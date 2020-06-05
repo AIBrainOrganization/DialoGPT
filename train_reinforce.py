@@ -258,7 +258,7 @@ def get_next_actions(target_net, next_states, eos):
   # should return batches
   next_states = next_states.to(get_device(model))
   sequences = []
-  for i in range(len(next_states)):
+  for i in tqdm.tqdm(range(len(next_states)), desc='actions'):
     next_state = attach_token(next_states[i:i + 1], eos)
     outputs = model.generate(
         input_ids=next_state, min_length=next_states.shape[1] + 5,
@@ -314,23 +314,21 @@ def get_loss(policy_net, target_net, criterion, batch, eos, GAMMA=0.999):
 
   input_ids = input_ids.to(get_device(policy_net))
 
-  import pdb
-  pdb.set_trace()
-
   state_action_values = policy_net(attach_token(input_ids, eos))
 
-  input_ids = input_ids.to(get_device(target_net))
-  next_states = next_states.to(get_device(target_net))
+  with torch.no_grad():
+    input_ids = input_ids.to(get_device(target_net))
+    next_states = next_states.to(get_device(target_net))
 
-  next_states = concat(input_ids, next_states, eos)
+    next_states = concat(input_ids, next_states, eos)
 
-  next_actions = get_next_actions(
-      target_net, next_states, eos).to(get_device(target_net))
+    next_actions = get_next_actions(
+        target_net, next_states, eos).to(get_device(target_net))
 
-  next_state_values = target_net(next_actions)
+    next_state_values = target_net(next_actions)
 
-  rewards = rewards.to(next_state_values.get_device()).reshape(-1, 1)
-  expected_state_action_values = next_state_values * GAMMA + rewards
+    rewards = rewards.to(next_state_values.get_device()).reshape(-1, 1)
+    expected_state_action_values = next_state_values * GAMMA + rewards
 
   loss = criterion(state_action_values, expected_state_action_values)
 

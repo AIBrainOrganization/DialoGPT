@@ -14,8 +14,6 @@ from util import get_device
 
 PADDING_TOKEN = 0
 
-torch.set_grad_enabled(False)
-
 # 토크나이저를 불러옵니다.
 tok_path = get_tokenizer()
 tokenizer = SentencepieceTokenizer(tok_path)
