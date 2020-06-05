@@ -20,9 +20,9 @@ def main():
 
   args = parser.parse_args()
 
-  train = open(os.path.join(args.output, 'train.tsv'), 'w')
-  valid = open(os.path.join(args.output, 'valid.tsv'), 'w')
-  test = open(os.path.join(args.output, 'test.tsv'), 'w')
+  train = open(os.path.join(args.output, 'train_bland.tsv'), 'w')
+  valid = open(os.path.join(args.output, 'valid_bland.tsv'), 'w')
+  test = open(os.path.join(args.output, 'test_bland.tsv'), 'w')
 
   with open(args.input) as input:
     for i, line in enumerate(input):

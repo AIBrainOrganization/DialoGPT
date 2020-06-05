@@ -67,14 +67,6 @@ class GPT2FeatureDataset(Dataset):
 
   def __getitem__(self, i):
     feat_dict = self.features[i]
-    if self.max_len is not None and feat_dict['input_len'] > self.max_len:
-      # tuncate on the left side (context)
-      feat_dict['input_ids'] = feat_dict['input_ids'][-self.max_len:]
-      feat_dict['position_ids'] = feat_dict['position_ids'][
-          -self.max_len:]
-      feat_dict['token_type_ids'] = feat_dict['token_type_ids'][
-          -self.max_len:]
-      feat_dict['lm_labels'] = feat_dict['lm_labels'][-self.max_len:]
     try:
       for s in ['context_len', 'response_len']:
         if s in feat_dict.keys():
@@ -95,18 +87,11 @@ class GPT2FeatureDataset(Dataset):
     input_ids = pad_sequence([torch.tensor(f.input_ids, dtype=torch.long)
                               for f in features],
                              batch_first=True, padding_value=0)
-    position_ids = pad_sequence([torch.tensor(f.position_ids,
-                                              dtype=torch.long)
-                                 for f in features],
-                                batch_first=True, padding_value=0)
-    token_type_ids = pad_sequence([torch.tensor(f.token_type_ids,
-                                                dtype=torch.long)
-                                   for f in features],
-                                  batch_first=True, padding_value=0)
-    labels = pad_sequence([torch.tensor(f.lm_labels, dtype=torch.long)
-                           for f in features],
-                          batch_first=True, padding_value=-1)
-    return (input_ids, position_ids, token_type_ids, labels)
+    next_states = pad_sequence([torch.tensor(f.next_state, dtype=torch.long)
+                                for f in features],
+                               batch_first=True, padding_value=0)
+    rewards = torch.tensor([f.reward for f in features], dtype=torch.half)
+    return (input_ids, next_states, rewards)
 
 
 class BucketingDataLoader(object):
@@ -134,10 +119,8 @@ class BucketingDataLoader(object):
       trunc_chunk = []
       lens = []
       for feat in chunk:
-        if feat['input_len'] > self.max_len:
-          continue
         trunc_chunk.append(feat)
-        lens.append(feat['input_len'])
+        lens.append(len(feat['input_ids']))
 
       dataset = GPT2FeatureDataset(trunc_chunk, self.max_len)
       sampler = BucketSampler(lens, self.bucket_size, self.batch_size,

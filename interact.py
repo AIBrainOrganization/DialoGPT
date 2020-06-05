@@ -5,11 +5,12 @@ import torch.nn.functional as F
 
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config
 from config import device_f, device_r, num_samples
-from config import top_k, top_p, ALPHA
+from config import top_k, top_p, ALPHA, BETA
 from kogpt2.pytorch_kogpt2 import get_kogpt2_model
 from kogpt2.pytorch_kogpt2 import get_pytorch_kogpt2_model
 from gluonnlp.data import SentencepieceTokenizer
 from kogpt2.utils import get_tokenizer
+from util import get_device
 
 PADDING_TOKEN = 0
 
@@ -21,20 +22,18 @@ tokenizer = SentencepieceTokenizer(tok_path)
 
 
 # 사전, 모델, 리버스 모델을 불러옵니다.
-def load(vocab_path, model_path, reverse_path):
+def load(vocab_path, model_path, reverse_path, device=0):
   # 모델과 사전을 불러옵니다.
-  model, vocab = get_kogpt2_model(model_path, vocab_path, 0)
+  model, vocab = get_kogpt2_model(model_path, vocab_path, device_f)
 
-  if device_f == 'cuda':
+  if device_f == 'cuda' or type(device_f) == int and device_f >= 0:
     model.half()
-  model.to(device_f)
   model.eval()
 
   # 리버스 모델을 불러옵니다.
-  reverse_model, _ = get_kogpt2_model(reverse_path, vocab_path, 0)
-  if device_r == 'cuda':
+  reverse_model, _ = get_kogpt2_model(reverse_path, vocab_path, device_r)
+  if device_r == 'cuda' or type(device_r) == int and device_r >= 0:
     reverse_model.half()
-  reverse_model.to(device_r)
   reverse_model.eval()
 
   end_token = torch.tensor([[vocab[vocab.eos_token]]], dtype=torch.long)
@@ -43,8 +42,9 @@ def load(vocab_path, model_path, reverse_path):
 
 
 # 각 답변의 점수를 계산합니다.
-def _score_response(input, input_reversed, output, model, reverse_model):
+def _score_response(input, input_reversed, output, model, reverse_model, dqn=None):
   # input, label, mask를 준비합니다.
+  device_r = get_device(reverse_model)
   output_reversed = output.to(device_r)
   inputs = torch.cat((input, output[:, :-1]), dim=1)
   inputs_reversed = torch.cat((output_reversed, input_reversed[:, :-1]), dim=1)
@@ -57,9 +57,15 @@ def _score_response(input, input_reversed, output, model, reverse_model):
   # 점수로 활용될 loss 값을 계산합니다.
   loss, *_ = model(inputs, labels=labels)
   reverse_loss, *_ = reverse_model(inputs_reversed, labels=labels_reversed)
-
-  # ALPHA 값으로 비중을 주고 loss를 점수로 변경하기 위해 -1을 곱해줍니다.
-  return -(ALPHA * loss.float() + (1 - ALPHA) * reverse_loss.float())
+  if dqn is None:
+    # ALPHA 값으로 비중을 주고 loss를 점수로 변경하기 위해 -1을 곱해줍니다.
+    return -(ALPHA * loss + (1 - ALPHA) * reverse_loss)
+  else:
+    inputs = inputs.to(get_device(dqn))
+    value = dqn(inputs)
+    return (BETA - 1) * \
+        (ALPHA * loss + (1 - ALPHA) * reverse_loss) + \
+        BETA * value
 
 
 # 히스토리에 새 문장을 추가해줍니다.

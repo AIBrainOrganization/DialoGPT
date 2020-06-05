@@ -70,7 +70,8 @@ def main():
   filtered = [filter_rows(r) for r in rows]
 
   df = [pd.DataFrame(f) for f in filtered]
-  names = ['train_bland.tsv', 'valid_bland.tsv', 'test_bland.tsv']
+  names = ['train_reinforce_bland.tsv',
+           'valid_reinforce_bland.tsv', 'test_reinforce_bland.tsv']
   for i, d in enumerate(df):
     d.to_csv(names[i], sep='\t', header=False, index=False)
 
