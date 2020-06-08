@@ -258,32 +258,40 @@ def get_next_actions(target_net, next_states, eos):
   # should return batches
   next_states = next_states.to(get_device(model))
   sequences = []
-  for i in tqdm.tqdm(range(len(next_states)), desc='actions'):
-    next_state = attach_token(next_states[i:i + 1], eos)
+  n_batch = 4
+  assert len(next_states) % n_batch == 0, \
+      'Num batch is not multiple of n_batch.'
+  for i in tqdm.tqdm(range(0, len(next_states), n_batch), desc='actions'):
+    next_state = attach_token(next_states[i:i + n_batch], eos)
     outputs = model.generate(
-        input_ids=next_state, min_length=next_states.shape[1] + 5,
-        max_length=next_states.shape[1] + 40,
+        input_ids=next_state, min_length=next_state.shape[1] + 5,
+        max_length=next_state.shape[1] + 40,
         num_return_sequences=num_samples,
         top_k=top_k, top_p=top_p, do_sample=True, repetition_penalty=1.2,
         pad_token_id=PADDING_TOKEN, eos_token_id=eos)
 
-    scores = []
-    for output in outputs:
-      output = output.unsqueeze(0)
-      try:
-        output = output[:, :output[0].tolist().index(
-            eos) + 1]
-      except:
-        pass
-      scores.append(_score_response(
-          attach_token(next_state, eos), attach_token(
-              reverse(next_state, eos), eos), output,
-          model, reverse_model, target_net))
-    scores = torch.stack(scores, dim=0)
+    outputs = outputs.reshape(-1, num_samples, outputs.shape[1])
 
-    # 가장 점수가 높은 문장을 선택합니다.
-    winner = torch.argmax(scores).item()
-    sequences.append(outputs[winner])
+    for j in range(n_batch):
+      samples = outputs[j, :, :]
+      scores = []
+      for output in samples:
+        output = output.unsqueeze(0)
+        try:
+          output = output[:, :output[0].tolist().index(
+              eos) + 1]
+        except:
+          pass
+        sentence = next_state[j:j + 1]
+        scores.append(_score_response(
+            attach_token(sentence, eos), attach_token(
+                reverse(sentence, eos), eos), output,
+            model, reverse_model, target_net))
+      scores = torch.stack(scores, dim=0)
+
+      # 가장 점수가 높은 문장을 선택합니다.
+      winner = torch.argmax(scores).item()
+      sequences.append(samples[winner])
   return pad_sequence(sequences, batch_first=True, padding_value=PADDING_TOKEN)
 
 
