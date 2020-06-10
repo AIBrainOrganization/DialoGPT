@@ -14,14 +14,14 @@ from kogpt2.utils import download as _download
 from kogpt2.utils import tokenizer as vocab_info
 from kogpt2.pytorch_kogpt2 import remove_module
 from lsp_model import Adam
-from interact import load, PADDING_TOKEN, _score_response
+from interact import load, _score_responses
 from config import vocab_path, model_path, reverse_model_path
 from config import top_k, top_p, ALPHA, BETA, num_samples
 from data_loader import BucketingDataLoader
 from gpt2_training.train_utils import boolean_string
 from os.path import join
 from torch.nn.utils.rnn import pad_sequence
-from util import get_device
+from util import get_device, concat, PADDING_TOKEN, trim, reverse
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -208,44 +208,6 @@ _, model, reverse_model, _ = load(
     vocab_path, model_path, reverse_model_path, 0)
 
 
-def trim(sequence):
-  pad_index = (sequence == PADDING_TOKEN).nonzero()
-  if sequence.dim() == 1:
-    if len(pad_index) == 0:
-      end_index = len(sequence)
-    else:
-      end_index = pad_index[0].item()
-    return sequence[:end_index]
-  else:
-    if len(pad_index) == 0:
-      end_index = sequence.shape[1]
-    else:
-      end_index = pad_index[0][1].item()
-    return sequence[:, :end_index]
-
-
-def reverse(ids, eos):
-  eos_tensor = torch.tensor([eos]).to(ids.get_device())
-  id_list = []
-  for id in ids:
-    eos_index = (id == eos).nonzero()
-    sequences = []
-    start_index = 0
-    for i in eos_index:
-      if i == eos_index[0]:
-        end_index = i
-      else:
-        end_index = i + 1
-      sequences.append(id[start_index:end_index])
-      start_index = i + 1
-    sequences.append(eos_tensor)
-    sequences.append(trim(id[start_index:]))
-
-    id_list.append(torch.cat(tuple(reversed(sequences))))
-
-  return pad_sequence(id_list, batch_first=True, padding_value=PADDING_TOKEN)
-
-
 def attach_token(ids, token):
   token_tensor = torch.tensor([token]).to(ids.get_device())
   id_list = []
@@ -273,46 +235,12 @@ def get_next_actions(target_net, next_states, eos):
     outputs = outputs.reshape(-1, num_samples, outputs.shape[1])
 
     for j in range(n_batch):
-      samples = outputs[j, :, :]
-      scores = []
-      for output in samples:
-        output = output.unsqueeze(0)
-        try:
-          output = output[:, :output[0].tolist().index(
-              eos) + 1]
-        except:
-          pass
-        sentence = next_state[j:j + 1]
-        scores.append(_score_response(
-            attach_token(sentence, eos), attach_token(
-                reverse(sentence, eos), eos), output,
-            model, reverse_model, target_net))
-      scores = torch.stack(scores, dim=0)
+      samples = outputs[j]
+      scores = _score_responses(samples, model, reverse_model, eos, target_net)
 
       # 가장 점수가 높은 문장을 선택합니다.
-      winner = torch.argmax(scores).item()
-      sequences.append(samples[winner])
-  return pad_sequence(sequences, batch_first=True, padding_value=PADDING_TOKEN)
-
-
-def concat(a, b, eos):
-  eos = torch.tensor([eos]).to(a.get_device())
-  sequences = []
-  for i in range(len(a)):
-    zero_index = (a[i] == 0).nonzero()
-    if len(zero_index) == 0:
-      a_i = a[i]
-    else:
-      a_i = a[i][:zero_index[0].item()]
-
-    zero_index = (b[i] == 0).nonzero()
-    if len(zero_index) == 0:
-      b_i = b[i]
-    else:
-      b_i = b[i][:zero_index[0].item()]
-
-    sequences.append(torch.cat((a_i, eos, b_i)))
-
+      winner = torch.argmax(scores)
+      sequences.append(outputs[j, winner])
   return pad_sequence(sequences, batch_first=True, padding_value=PADDING_TOKEN)
 
 
@@ -332,6 +260,8 @@ def get_loss(policy_net, target_net, criterion, batch, eos, GAMMA=0.999):
 
     next_actions = get_next_actions(
         target_net, next_states, eos).to(get_device(target_net))
+    import pdb
+    pdb.set_trace()
 
     next_state_values = target_net(next_actions)
 
@@ -368,6 +298,7 @@ def main():
   args = get_args()
 
   device = 1
+  target_net_device = 0
   n_gpu = torch.cuda.device_count()
   args.device, args.n_gpu = device, n_gpu
 
@@ -377,7 +308,7 @@ def main():
       args.gradient_accumulation_steps
 
   policy_net, vocab = get_model(device)
-  target_net = get_model(device)[0]
+  target_net = get_model(target_net_device)[0]
   target_net.eval()
 
   eos = vocab[vocab.eos_token]

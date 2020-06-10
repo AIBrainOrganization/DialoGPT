@@ -10,9 +10,10 @@ from kogpt2.pytorch_kogpt2 import get_kogpt2_model
 from kogpt2.pytorch_kogpt2 import get_pytorch_kogpt2_model
 from gluonnlp.data import SentencepieceTokenizer
 from kogpt2.utils import get_tokenizer
-from util import get_device
+from util import get_device, concat, PADDING_TOKEN, reverse, trim
+from torch.nn.utils.rnn import pad_sequence
 
-PADDING_TOKEN = 0
+IGNORE_TOKEN = -1
 
 # 토크나이저를 불러옵니다.
 tok_path = get_tokenizer()
@@ -46,10 +47,10 @@ def _score_response(input, input_reversed, output, model, reverse_model, dqn=Non
   output_reversed = output.to(device_r)
   inputs = torch.cat((input, output[:, :-1]), dim=1)
   inputs_reversed = torch.cat((output_reversed, input_reversed[:, :-1]), dim=1)
-  mask = torch.full_like(input[:, :-1], -1, dtype=torch.long)
+  mask = torch.full_like(input[:, :-1], IGNORE_TOKEN, dtype=torch.long)
   labels = torch.cat((mask, output), dim=1)
   mask_reversed = torch.full_like(
-      output_reversed[:, :-1], -1, dtype=torch.long)
+      output_reversed[:, :-1], IGNORE_TOKEN, dtype=torch.long)
   labels_reversed = torch.cat((mask_reversed, input_reversed), dim=1)
 
   # 점수로 활용될 loss 값을 계산합니다.
@@ -64,6 +65,105 @@ def _score_response(input, input_reversed, output, model, reverse_model, dqn=Non
     return (BETA - 1) * \
         (ALPHA * loss + (1 - ALPHA) * reverse_loss) + \
         BETA * value
+
+
+def eos_end(id, indexes, eos):
+  if indexes[-1] == len(id) - 1:
+    return True
+
+  return id[indexes[-1] + 1] == PADDING_TOKEN
+
+
+# def last(ids, eos):
+#   original_shape = ids.shape
+#   ids = ids.reshape(-1, ids.shape[-1])
+#
+#   sequences = []
+#   for id in ids:
+#     indexes = (id == eos).nonzero()
+#     if eos_end(id, indexes, eos):
+#       i = 2
+#     else:
+#       import pdb
+#       pdb.set_trace()
+#       i = 1
+#     if len(indexes) >= i:
+#       id = trim(id[indexes[-i] + 1:])
+#
+#     sequences.append(id)
+#
+#   ret = pad_sequence(sequences, batch_first=True, padding_value=PADDING_TOKEN)
+#   if len(original_shape) > 2:
+#     ret = ret.reshape(list(original_shape[:-1]) + [-1])
+#
+#   return ret
+
+
+def prepare_inputs(outputs, eos):
+  shape = outputs.shape
+  outputs = outputs.reshape(-1, shape[-1])
+  outputs_reversed = reverse(outputs, eos)
+  labels = []
+  sequences = []
+  for output in outputs:
+    output = trim(output)
+    label = output.new_full((output.shape[0] - 1,), IGNORE_TOKEN)
+    eos_indexes = (output == eos).nonzero()
+    if eos_end(output, eos_indexes, eos):
+      i = 2
+    else:
+      i = 1
+    start_index = eos_indexes[-i] + 1
+    end_index = len(output)
+    label[start_index - 1:end_index - 1] = output[start_index:end_index]
+    output = output[:end_index - 1]
+
+    labels.append(label)
+    sequences.append(output)
+
+  outputs = pad_sequence(sequences, batch_first=True,
+                         padding_value=PADDING_TOKEN)
+  labels = pad_sequence(labels, batch_first=True, padding_value=IGNORE_TOKEN)
+
+  labels_reversed = []
+  sequences_reversed = []
+  for output in outputs_reversed:
+    output = trim(output)
+    label = output.new_full((output.shape[0] - 1,), IGNORE_TOKEN)
+    eos_indexes = (output == eos).nonzero()
+    start_index = eos_indexes[0] + 1
+    end_index = len(output)
+    label[start_index - 1:end_index - 1] = output[start_index:end_index]
+    output = output[:end_index - 1]
+
+    labels_reversed.append(label)
+    sequences_reversed.append(output)
+  outputs_reversed = pad_sequence(sequences_reversed, batch_first=True,
+                                  padding_value=PADDING_TOKEN)
+  labels_reversed = pad_sequence(
+      labels_reversed, batch_first=True, padding_value=IGNORE_TOKEN)
+
+  return outputs, labels, outputs_reversed, labels_reversed
+
+
+def _score_responses(outputs, model, reverse_model, eos, dqn=None):
+  shape = outputs.shape
+  inputs, labels, inputs_reversed, labels_reversed = prepare_inputs(
+      outputs, eos)
+  # torch.cuda.empty_cache()
+  _, _, loss = model(inputs, labels=labels)
+  # torch.cuda.empty_cache()
+  _, _, reverse_loss = reverse_model(inputs_reversed, labels=labels_reversed)
+  if dqn is None:
+    # ALPHA 값으로 비중을 주고 loss를 점수로 변경하기 위해 -1을 곱해줍니다.
+    return -(ALPHA * loss + (1 - ALPHA) * reverse_loss)
+  else:
+    outputs = outputs.to(get_device(dqn)).reshape(-1, shape[-1])
+    value = dqn(outputs).squeeze(1)
+    scores = (BETA - 1) * \
+        (ALPHA * loss + (1 - ALPHA) * reverse_loss) + \
+        BETA * value
+    return scores.reshape(shape[:-1])
 
 
 # 히스토리에 새 문장을 추가해줍니다.
