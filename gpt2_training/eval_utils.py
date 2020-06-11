@@ -62,8 +62,8 @@ def eval_model_loss(model, tokenizer, eval_dataloader, epoch_id, args):
       if args.no_token_id:
         token_ids = None
       n_sample = input_ids.shape[0]
-      loss, ppl = model(input_ids, position_ids=position_ids,
-                        token_type_ids=token_ids, labels=label_ids)
+      loss, ppl, _ = model(input_ids, position_ids=position_ids,
+                           token_type_ids=token_ids, labels=label_ids)
       tot_loss.append(loss.mean().item() * n_sample)
       tot_ppl.append(ppl.mean().item() * n_sample)
       tot_sample.append(n_sample)

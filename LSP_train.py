@@ -311,8 +311,8 @@ while True:
     input_ids, position_ids, token_ids, label_ids, *_ = batch
     if args.no_token_id:
       token_ids = None
-    loss, ppl = model(input_ids, position_ids=position_ids,
-                      token_type_ids=token_ids, labels=label_ids)
+    loss, ppl, _ = model(input_ids, position_ids=position_ids,
+                         token_type_ids=token_ids, labels=label_ids)
     # loss, ppl = model(input_ids, labels=label_ids)
 
     # reporter = MemReporter(model)
