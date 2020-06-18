@@ -1,6 +1,7 @@
 import torch
 import argparse
-
+import sys
+import numpy as np
 import torch.nn.functional as F
 
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config
@@ -12,6 +13,11 @@ from gluonnlp.data import SentencepieceTokenizer
 from kogpt2.utils import get_tokenizer
 from util import get_device, concat, PADDING_TOKEN, reverse, trim
 from torch.nn.utils.rnn import pad_sequence
+
+# sys.path.append('/home/calee/git/dcinside')
+# from prof import Prof
+#
+# p = Prof()
 
 IGNORE_TOKEN = -1
 
@@ -70,7 +76,6 @@ def _score_response(input, input_reversed, output, model, reverse_model, dqn=Non
 def eos_end(id, indexes, eos):
   if indexes[-1] == len(id) - 1:
     return True
-
   return id[indexes[-1] + 1] == PADDING_TOKEN
 
 
@@ -100,15 +105,17 @@ def eos_end(id, indexes, eos):
 
 
 def prepare_inputs(outputs, eos):
+  device = outputs.get_device()
+  outputs = outputs.cpu().numpy()
   shape = outputs.shape
   outputs = outputs.reshape(-1, shape[-1])
   outputs_reversed = reverse(outputs, eos)
   labels = []
   sequences = []
   for output in outputs:
-    output = trim(output)
-    label = output.new_full((output.shape[0] - 1,), IGNORE_TOKEN)
-    eos_indexes = (output == eos).nonzero()
+    output = output[output != PADDING_TOKEN]
+    label = np.full((output.shape[0] - 1,), IGNORE_TOKEN)
+    eos_indexes = np.where(output == eos)[0]
     if eos_end(output, eos_indexes, eos):
       i = 2
     else:
@@ -118,32 +125,84 @@ def prepare_inputs(outputs, eos):
     label[start_index - 1:end_index - 1] = output[start_index:end_index]
     output = output[:end_index - 1]
 
-    labels.append(label)
-    sequences.append(output)
+    labels.append(torch.tensor(label))
+    sequences.append(torch.tensor(output))
 
   outputs = pad_sequence(sequences, batch_first=True,
-                         padding_value=PADDING_TOKEN)
-  labels = pad_sequence(labels, batch_first=True, padding_value=IGNORE_TOKEN)
+                         padding_value=PADDING_TOKEN).to(device)
+  labels = pad_sequence(labels, batch_first=True,
+                        padding_value=IGNORE_TOKEN).to(device)
 
   labels_reversed = []
   sequences_reversed = []
   for output in outputs_reversed:
-    output = trim(output)
-    label = output.new_full((output.shape[0] - 1,), IGNORE_TOKEN)
-    eos_indexes = (output == eos).nonzero()
+    label = np.full((output.shape[0] - 1,), IGNORE_TOKEN)
+    eos_indexes = np.where(output == eos)[0]
     start_index = eos_indexes[0] + 1
     end_index = len(output)
     label[start_index - 1:end_index - 1] = output[start_index:end_index]
     output = output[:end_index - 1]
 
-    labels_reversed.append(label)
-    sequences_reversed.append(output)
+    labels_reversed.append(torch.tensor(label))
+    sequences_reversed.append(torch.tensor(output))
   outputs_reversed = pad_sequence(sequences_reversed, batch_first=True,
-                                  padding_value=PADDING_TOKEN)
+                                  padding_value=PADDING_TOKEN).to(device)
   labels_reversed = pad_sequence(
-      labels_reversed, batch_first=True, padding_value=IGNORE_TOKEN)
+      labels_reversed, batch_first=True, padding_value=IGNORE_TOKEN).to(device)
 
   return outputs, labels, outputs_reversed, labels_reversed
+
+# def prepare_inputs(outputs, eos):
+#   p.tick('reverse')
+#   shape = outputs.shape
+#   outputs = outputs.reshape(-1, shape[-1])
+#   outputs_reversed = reverse(outputs, eos)
+#   p.tock()
+#   p.tick('outputs')
+#   labels = []
+#   sequences = []
+#   for output in outputs:
+#     output = trim(output)
+#     label = output.new_full((output.shape[0] - 1,), IGNORE_TOKEN)
+#     eos_indexes = (output == eos).nonzero()
+#     if eos_end(output, eos_indexes, eos):
+#       i = 2
+#     else:
+#       i = 1
+#     start_index = eos_indexes[-i] + 1
+#     end_index = len(output)
+#     label[start_index - 1:end_index - 1] = output[start_index:end_index]
+#     output = output[:end_index - 1]
+#
+#     labels.append(label)
+#     sequences.append(output)
+#
+#   outputs = pad_sequence(sequences, batch_first=True,
+#                          padding_value=PADDING_TOKEN)
+#   labels = pad_sequence(labels, batch_first=True, padding_value=IGNORE_TOKEN)
+#   p.tock()
+#
+#   p.tick('reversed')
+#   labels_reversed = []
+#   sequences_reversed = []
+#   for output in outputs_reversed:
+#     output = trim(output)
+#     label = output.new_full((output.shape[0] - 1,), IGNORE_TOKEN)
+#     eos_indexes = (output == eos).nonzero()
+#     start_index = eos_indexes[0] + 1
+#     end_index = len(output)
+#     label[start_index - 1:end_index - 1] = output[start_index:end_index]
+#     output = output[:end_index - 1]
+#
+#     labels_reversed.append(label)
+#     sequences_reversed.append(output)
+#   outputs_reversed = pad_sequence(sequences_reversed, batch_first=True,
+#                                   padding_value=PADDING_TOKEN)
+#   labels_reversed = pad_sequence(
+#       labels_reversed, batch_first=True, padding_value=IGNORE_TOKEN)
+#   p.tock()
+#
+#   return outputs, labels, outputs_reversed, labels_reversed
 
 
 def _score_responses(outputs, model, reverse_model, eos, dqn=None):
