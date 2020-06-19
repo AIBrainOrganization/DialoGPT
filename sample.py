@@ -21,7 +21,8 @@ from os.path import join
 from tqdm import tqdm
 from torch.distributed import get_rank, get_world_size
 from interact import generate_message
-from interact import decode
+from interact import decode, load
+from config import vocab_path, model_path, reverse_model_path
 
 from lsp_model import GPT2LMHeadModel, GPT2Tokenizer, GPT2Config, Adam
 from gpt2_training.train_utils import load_model, boolean_string, set_lr, get_eval_list_same_length
@@ -186,6 +187,10 @@ data = []
 for batch in eval_dataloader_loss:
   data.append(batch)
 
+vocab, model, reverse_model, _ = load(
+    vocab_path, model_path, reverse_model_path)
+
+
 EOS = 1
 for step, batch in enumerate(tqdm(data[-30:])):
   batch = tuple(t.to(args.device) for t in batch)
@@ -207,6 +212,7 @@ for step, batch in enumerate(tqdm(data[-30:])):
       idx += 1
   ids = ids[:-1]
 
-  message = generate_message([torch.tensor([id]) for id in ids])
+  message = generate_message([torch.tensor([id])
+                              for id in ids], model, reverse_model, vocab, False)
   print(
-      f'{decode(input_ids[0].tolist(), skip_special_tokens=False)}\t{message}')
+      f'{decode(input_ids[0].tolist(), vocab, skip_special_tokens=False)}\t{message}')
