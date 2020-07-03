@@ -7,9 +7,11 @@ import tqdm
 import types
 import random
 import sys
+import math
 import gluonnlp as nlp
 import torch.nn as nn
 import torch.nn.functional as F
+import apex.amp as amp
 
 from kogpt2.model.torch_gpt2 import GPT2PreTrainedModel
 from kogpt2.model.torch_gpt2 import GPT2Model, GPT2Config
@@ -97,7 +99,7 @@ def get_model(ctx='cpu', cachedir='~/kogpt2/', fp16=True):
 
   config = {
       "initializer_range": 0.02,
-      "layer_norm_epsilon": 1e-05,
+      "layer_norm_epsilon": 1e-5,
       "n_ctx": 1024,
       "n_embd": 768,
       "n_head": 12,
@@ -202,8 +204,7 @@ def get_optimizer(parameters, fp16, loss_scale, learning_rate):
                                  static_loss_scale=loss_scale,
                                  verbose=False)
   else:
-    optimizer = Adam(optimizer_grouped_parameters, learning_rate,
-                     max_grad_norm=1.0)
+    optimizer = Adam(parameters, learning_rate, max_grad_norm=1.0)
   return optimizer
 
 
@@ -397,6 +398,9 @@ def get_next_actions(target_net, next_states, eos, n_batch=32):
   # should return batches
   next_states = next_states.to(get_device(model))
   sequences = []
+  devisor = (next_states.size(1) // 110 + 1)
+  devisor = 2 ** math.ceil(math.log(devisor, 2))
+  n_batch = n_batch // devisor
   assert len(next_states) % n_batch == 0, \
       'Num batch is not multiple of n_batch.'
   for i in range(0, len(next_states), n_batch):
@@ -404,9 +408,8 @@ def get_next_actions(target_net, next_states, eos, n_batch=32):
     outputs = model.generate(
         input_ids=next_state, min_length=next_state.shape[1] + 5,
         max_length=next_state.shape[1] + 20,
-        num_return_sequences=num_samples,
-        top_k=top_k, top_p=top_p, do_sample=True,
-        pad_token_id=PADDING_TOKEN, eos_token_id=eos)
+        num_return_sequences=num_samples, top_k=top_k, top_p=top_p,
+        do_sample=True, pad_token_id=PADDING_TOKEN, eos_token_id=eos)
 
     outputs = trim(outputs)
 
@@ -445,7 +448,8 @@ def get_loss(policy_net, target_net, criterion, batch, eos, n_batch=32,
     expected_state_action_values = next_state_values * GAMMA + rewards
 
   loss = criterion(state_action_values,
-                   expected_state_action_values.to(state_action_values.device))
+                   expected_state_action_values.to(
+                       state_action_values.device).float())
 
   if loss.dim() != 0:
     loss = loss.mean()
@@ -482,8 +486,8 @@ def main():
   args.train_batch_size = args.train_batch_size // \
       args.gradient_accumulation_steps
 
-  policy_net, vocab = get_model(device)
-  target_net = get_model(target_net_device)[0]
+  policy_net, vocab = get_model(device, fp16=args.fp16)
+  target_net = get_model(target_net_device, fp16=True)[0]
   target_net.eval()
 
   eos = vocab[vocab.eos_token]
@@ -491,6 +495,9 @@ def main():
   parameters = get_parameters(policy_net)
   optimizer = get_optimizer(parameters, args.fp16,
                             args.loss_scale, args.learning_rate)
+
+  policy_net, optimizer = amp.initialize(policy_net, optimizer, opt_level='O3')
+
   optimizer.zero_grad()
   criterion = nn.SmoothL1Loss()
 
@@ -526,24 +533,28 @@ def main():
 
     for batch in train_dataloader:
       policy_net.train()
+
       loss = get_loss(policy_net, target_net, criterion, batch, eos)
       if args.fp16:
         optimizer.backward(loss)
       else:
-        loss.backward()
+        with amp.scale_loss(loss, optimizer) as scaled_loss:
+          scaled_loss.backward()
+        # loss.backward()
 
       tr_loss += float(loss.item())
       nb_tr_steps += 1
       mean_loss = tr_loss / nb_tr_steps
 
       step += 1
+
       if step % args.gradient_accumulation_steps == 0:
         optimizer.step()
         optimizer.zero_grad()
         global_step += 1
 
         if pbar is not None:
-          pbar.set_postfix_str(f'loss: {mean_loss} epoch: {epoch}')
+          pbar.set_postfix_str(f'loss: {mean_loss:0.4e} epoch: {epoch}')
           pbar.update(1)
         print(f'{epoch},{global_step},{mean_loss}', file=train_logger)
 
