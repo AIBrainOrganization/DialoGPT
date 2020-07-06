@@ -69,17 +69,19 @@ class DQN(GPT2PreTrainedModel):
         indexes.append(last_index)
       else:
         indexes.append(index[0].item() - 1)
-    indexes = torch.tensor(indexes).to(transformer_outputs[0].device)
-    indexes = indexes.unsqueeze(-1).unsqueeze(-1)
-    indexes = indexes.expand(
-        (-1,) * (indexes.dim() - 1) + (transformer_outputs[0].size(-1),))
+    with torch.cuda.device(transformer_outputs[0].device):
+      indexes = torch.tensor(indexes).to(transformer_outputs[0].device)
+      indexes = indexes.unsqueeze(-1).unsqueeze(-1)
+      indexes = indexes.expand(
+          (-1,) * (indexes.dim() - 1) + (transformer_outputs[0].size(-1),))
 
-    hidden_states = transformer_outputs[0].gather(-2, indexes).squeeze(-2)
+      hidden_states = transformer_outputs[0].gather(-2, indexes).squeeze(-2)
 
     return self.head(hidden_states)
 
 
 def get_model(ctx='cpu', cachedir='~/kogpt2/', fp16=True):
+  device = torch.device(ctx)
   model_info = {
       'url':
       'https://kobert.blob.core.windows.net/models/kogpt2/pytorch/pytorch_kogpt2_676e9bcfa7.params',
@@ -110,24 +112,24 @@ def get_model(ctx='cpu', cachedir='~/kogpt2/', fp16=True):
       'attn_pdrop': 0.1,
       'resid_pdrop': 0.1
   }
-  model = DQN(config=GPT2Config.from_dict(config))
-  d = torch.load(model_path)
-  d = remove_module(d)
-  model.load_state_dict(d, strict=False)
-  device = torch.device(ctx)
-  model.to(device)
-  vocab = nlp.vocab.BERTVocab.from_sentencepiece(vocab_path,
-                                                 mask_token=None,
-                                                 sep_token=None,
-                                                 cls_token=None,
-                                                 unknown_token='<unk>',
-                                                 padding_token='<pad>',
-                                                 bos_token='<s>',
-                                                 eos_token='</s>')
+  with torch.cuda.device(device):
+    model = DQN(config=GPT2Config.from_dict(config))
+    d = torch.load(model_path)
+    d = remove_module(d)
+    model.load_state_dict(d, strict=False)
+    model.to(device)
+    vocab = nlp.vocab.BERTVocab.from_sentencepiece(vocab_path,
+                                                   mask_token=None,
+                                                   sep_token=None,
+                                                   cls_token=None,
+                                                   unknown_token='<unk>',
+                                                   padding_token='<pad>',
+                                                   bos_token='<s>',
+                                                   eos_token='</s>')
 
-  if fp16:
-    logger.info('in fp16, model.half() activated')
-    model.half()
+    if fp16:
+      logger.info('in fp16, model.half() activated')
+      model.half()
   return model, vocab
 
 
@@ -278,7 +280,8 @@ def _generate_no_beam_search(
 
       position_ids = torch.stack(position_ids, dim=0)
       position_ids[position_ids < 0] = 0
-      position_ids = position_ids.to(input_ids.get_device())
+      with torch.cuda.device(input_ids.get_device()):
+        position_ids = position_ids.to(input_ids.get_device())
     else:
       position_ids = position_ids[:, -1:] + 1
 
@@ -376,80 +379,38 @@ def _generate_no_beam_search(
   return decoded
 
 
-_, model, reverse_model, _ = load(
-    vocab_path, model_path, reverse_model_path, 0)
-
-model._generate_no_beam_search = types.MethodType(
-    _generate_no_beam_search, model)
-
-min_p = min_p_alpha / model.lm_head.out_features
+# _, model, reverse_model, _ = load(
+#     vocab_path, model_path, reverse_model_path, 0)
+#
+# model._generate_no_beam_search = types.MethodType(
+#     _generate_no_beam_search, model)
+#
+# min_p = min_p_alpha / model.lm_head.out_features
 
 
 def attach_token(ids, token, pad_end=True):
-  token_tensor = torch.tensor([token]).to(ids.get_device())
-  id_list = []
-  for id in ids:
-    id_list.append(torch.cat((trim(id), token_tensor)))
-  return pad_sequence(id_list, batch_first=True, padding_value=PADDING_TOKEN,
-                      pad_end=pad_end)
+  with torch.cuda.device(ids.get_device()):
+    token_tensor = torch.tensor([token]).to(ids.get_device())
+    id_list = []
+    for id in ids:
+      id_list.append(torch.cat((trim(id), token_tensor)))
+    return pad_sequence(id_list, batch_first=True, padding_value=PADDING_TOKEN,
+                        pad_end=pad_end)
 
 
-def get_next_actions(target_net, next_states, eos, n_batch=32):
-  # should return batches
-  next_states = next_states.to(get_device(model))
-  sequences = []
-  devisor = (next_states.size(1) // 110 + 1)
-  devisor = 2 ** math.ceil(math.log(devisor, 2))
-  n_batch = n_batch // devisor
-  assert len(next_states) % n_batch == 0, \
-      'Num batch is not multiple of n_batch.'
-  for i in range(0, len(next_states), n_batch):
-    next_state = attach_token(next_states[i:i + n_batch], eos, pad_end=False)
-    outputs = model.generate(
-        input_ids=next_state, min_length=next_state.shape[1] + 5,
-        max_length=next_state.shape[1] + 20,
-        num_return_sequences=num_samples, top_k=top_k, top_p=top_p,
-        do_sample=True, pad_token_id=PADDING_TOKEN, eos_token_id=eos)
-
-    outputs = trim(outputs)
-
-    outputs = outputs.reshape(-1, num_samples, outputs.shape[1])
-
-    for j in range(n_batch):
-      samples = outputs[j]
-      scores = _score_responses(samples, model, reverse_model, eos, target_net)
-
-      # 가장 점수가 높은 문장을 선택합니다.
-      winner = torch.argmax(scores)
-      sequences.append(outputs[j, winner])
-  return pad_sequence(sequences, batch_first=True, padding_value=PADDING_TOKEN)
-
-
-def get_loss(policy_net, target_net, criterion, batch, eos, n_batch=32,
-             GAMMA=0.999):
+def get_loss(policy_net, criterion, batch, eos, n_batch=32, GAMMA=0.999):
   # input_ids contains both state and action
   input_ids, next_states, rewards = batch
+  with torch.cuda.device(get_device(policy_net)):
+    input_ids = input_ids.to(get_device(policy_net))
 
-  input_ids = input_ids.to(get_device(policy_net))
-
-  state_action_values = policy_net(attach_token(input_ids, eos))
+    state_action_values = policy_net(attach_token(input_ids, eos))
 
   with torch.no_grad():
-    input_ids = input_ids.to(get_device(target_net))
-    next_states = next_states.to(get_device(target_net))
+    with torch.cuda.device(state_action_values.get_device()):
+      rewards = rewards.to(state_action_values.get_device()).reshape(-1, 1)
 
-    next_states = concat(input_ids, next_states, eos)
-
-    next_actions = get_next_actions(
-        target_net, next_states, eos, n_batch).to(get_device(target_net))
-    next_state_values = target_net(next_actions)
-
-    rewards = rewards.to(next_state_values.get_device()).reshape(-1, 1)
-    expected_state_action_values = next_state_values * GAMMA + rewards
-
-  loss = criterion(state_action_values,
-                   expected_state_action_values.to(
-                       state_action_values.device).float())
+  loss = criterion(state_action_values, rewards.float())
 
   if loss.dim() != 0:
     loss = loss.mean()
@@ -457,15 +418,14 @@ def get_loss(policy_net, target_net, criterion, batch, eos, n_batch=32,
   return loss
 
 
-def eval_model_loss(policy_net, target_net, eval_dataloader, criterion, epoch, args, eos):
+def eval_model_loss(policy_net, eval_dataloader, criterion, epoch, args, eos):
   policy_net.eval()
   tot_loss = 0
   tot_sample = 0
   with torch.no_grad():
     for step, batch in enumerate(eval_dataloader):
       n_sample = batch[0].shape[0]
-      loss = get_loss(policy_net, target_net,
-                      criterion, batch, eos, n_batch=16)
+      loss = get_loss(policy_net, criterion, batch, eos, n_batch=16)
       tot_loss += loss.mean().item() * n_sample
       tot_sample += n_sample
   loss = tot_loss / tot_sample
@@ -476,8 +436,7 @@ def eval_model_loss(policy_net, target_net, eval_dataloader, criterion, epoch, a
 def main():
   args = get_args()
 
-  device = 1
-  target_net_device = 0
+  device = 0
   n_gpu = torch.cuda.device_count()
   args.device, args.n_gpu = device, n_gpu
 
@@ -487,8 +446,6 @@ def main():
       args.gradient_accumulation_steps
 
   policy_net, vocab = get_model(device, fp16=args.fp16)
-  target_net = get_model(target_net_device, fp16=True)[0]
-  target_net.eval()
 
   eos = vocab[vocab.eos_token]
 
@@ -496,7 +453,9 @@ def main():
   optimizer = get_optimizer(parameters, args.fp16,
                             args.loss_scale, args.learning_rate)
 
-  policy_net, optimizer = amp.initialize(policy_net, optimizer, opt_level='O3')
+  with torch.cuda.device(device):
+    policy_net, optimizer = amp.initialize(
+        policy_net, optimizer, opt_level='O2')
 
   optimizer.zero_grad()
   criterion = nn.SmoothL1Loss()
@@ -534,7 +493,7 @@ def main():
     for batch in train_dataloader:
       policy_net.train()
 
-      loss = get_loss(policy_net, target_net, criterion, batch, eos)
+      loss = get_loss(policy_net, criterion, batch, eos)
       if args.fp16:
         optimizer.backward(loss)
       else:
@@ -561,15 +520,12 @@ def main():
         if global_step % args.valid_step == 0:
           # save to cpu tensors
           torch.save({k: (v.cpu() if v is not None else None)
-                      for k, v in model.state_dict().items()},
+                      for k, v in policy_net.state_dict().items()},
                      join(output_dir,
                           f'GP2-pretrain-step-{global_step}.pkl'))
           eval_loss = eval_model_loss(
-              policy_net, target_net, eval_dataloader, criterion, epoch, args, eos)
+              policy_net, eval_dataloader, criterion, epoch, args, eos)
           print(f'{epoch},{global_step},{eval_loss}', file=eval_logger)
-
-        if global_step % args.target_update == 0:
-          target_net.load_state_dict(policy_net.state_dict())
 
         if global_step >= args.num_optim_steps:
           break
