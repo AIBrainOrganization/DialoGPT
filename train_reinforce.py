@@ -39,7 +39,13 @@ class DQN(GPT2PreTrainedModel):
   def __init__(self, config):
     super().__init__(config)
     self.transformer = GPT2Model(config)
-    self.head = nn.Linear(config.n_embd, 1, bias=False)
+    heads = []
+    for l in range(config.n_head_layer - 1):
+      heads.append(nn.Linear(config.n_embd, config.n_embd))
+      heads.append(nn.ReLU())
+    heads.append(nn.Linear(config.n_embd, 1))
+    heads.append(nn.Tanh())
+    self.head = nn.Sequential(*heads)
     self.init_weights()
 
   def forward(
@@ -89,10 +95,10 @@ def get_model(ctx='cpu', cachedir='~/kogpt2/', fp16=True):
       'chksum': '676e9bcfa7'
   }
 
-  model_path = _download(model_info['url'],
-                         model_info['fname'],
-                         model_info['chksum'],
-                         cachedir=cachedir)
+  # model_path = _download(model_info['url'],
+  #                        model_info['fname'],
+  #                        model_info['chksum'],
+  #                        cachedir=cachedir)
 
   vocab_path = _download(vocab_info['url'],
                          vocab_info['fname'],
@@ -108,9 +114,10 @@ def get_model(ctx='cpu', cachedir='~/kogpt2/', fp16=True):
       "n_layer": 12,
       "n_positions": 1024,
       "vocab_size": 50000,
-      'embd_pdrop': 0.1,
-      'attn_pdrop': 0.1,
-      'resid_pdrop': 0.1
+      'embd_pdrop': 0,
+      'attn_pdrop': 0,
+      'resid_pdrop': 0,
+      'n_head_layer': 2
   }
   with torch.cuda.device(device):
     model = DQN(config=GPT2Config.from_dict(config))
@@ -206,7 +213,8 @@ def get_optimizer(parameters, fp16, loss_scale, learning_rate):
                                  static_loss_scale=loss_scale,
                                  verbose=False)
   else:
-    optimizer = Adam(parameters, learning_rate, max_grad_norm=1.0)
+    optimizer = Adam(parameters, learning_rate,
+                     max_grad_norm=-1, weight_decay_rate=0)
   return optimizer
 
 
@@ -216,7 +224,7 @@ def get_parameters(model):
   parameters = [
       {'params': [p for n, p in param_optimizer
                   if not any(nd in n for nd in no_decay)],
-       'weight_decay': 0.01},
+       'weight_decay': 0.0},
       {'params': [p for n, p in param_optimizer
                   if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
   ]
@@ -458,7 +466,7 @@ def main():
         policy_net, optimizer, opt_level='O2')
 
   optimizer.zero_grad()
-  criterion = nn.SmoothL1Loss()
+  criterion = nn.L1Loss()
 
   timestamp = datetime.datetime.now().strftime('%Y-%m-%d%H%M%S')
   output_dir = join(args.output_dir,
