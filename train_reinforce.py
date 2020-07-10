@@ -114,9 +114,9 @@ def get_model(ctx='cpu', cachedir='~/kogpt2/', fp16=True):
       "n_layer": 12,
       "n_positions": 1024,
       "vocab_size": 50000,
-      'embd_pdrop': 0,
-      'attn_pdrop': 0,
-      'resid_pdrop': 0,
+      'embd_pdrop': 0.1,
+      'attn_pdrop': 0.1,
+      'resid_pdrop': 0.1,
       'n_head_layer': 2
   }
   with torch.cuda.device(device):
@@ -214,7 +214,7 @@ def get_optimizer(parameters, fp16, loss_scale, learning_rate):
                                  verbose=False)
   else:
     optimizer = Adam(parameters, learning_rate,
-                     max_grad_norm=-1, weight_decay_rate=0)
+                     max_grad_norm=-1)
   return optimizer
 
 
@@ -224,7 +224,7 @@ def get_parameters(model):
   parameters = [
       {'params': [p for n, p in param_optimizer
                   if not any(nd in n for nd in no_decay)],
-       'weight_decay': 0.0},
+       'weight_decay': 0.01},
       {'params': [p for n, p in param_optimizer
                   if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
   ]
