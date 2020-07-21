@@ -32,43 +32,32 @@ def _get_file_len(corpus):
 
 
 def _get_inputs_from_text(text, tokenizer, vocab):
-  srcs, tgt, reward = text
-  weights = []
-  inputs = []
-  for src in srcs.split(' EOS '):
-    context_id = vocab[tokenizer(src)]
-    inputs.append(context_id)
-  response_id = vocab[tokenizer(tgt)]
-  inputs.append(response_id)
+  input, reward = text
+  input = vocab[tokenizer(input)]
 
   reward = float(reward)
 
-  return inputs, reward
+  return input, reward
 
 
-def _make_features(id_, inputs, reward, vocab, max_len):
+def _make_features(id_, input, reward, vocab, max_len):
   end_of_text_id = vocab[vocab.eos_token]
   features = []
-  len_ = 0
 
-  for ids in inputs:
-    if len(ids) > max_len or len_ > max_len:
-      sys.exit('max_len exceeded.')
-    len_ += len(ids) + 1
-  feat = _make_feature(id_, inputs, reward, end_of_text_id)
+  if len(input) > max_len:
+    sys.exit('max_len exceeded.')
+  feat = _make_feature(id_, input, reward, end_of_text_id)
   if feat is not None:
     features.append(feat)
 
   return features
 
 
-def _make_feature(id_, sents, reward, eos):
-  input_ids = [i for s in sents for i in s + [eos]][:-1]
-
-  if len(input_ids) == 0:
+def _make_feature(id_, sent, reward, eos):
+  if len(sent) == 0:
     import pdb
     pdb.set_trace()
-  return InputFeatures(id_, input_ids, reward)
+  return InputFeatures(id_, sent, reward)
 
 
 def main(args):
@@ -111,12 +100,10 @@ def main(args):
           chunk = chunk[args.chunk_size:]
           n_chunk += 1
 
-        inputs, reward = _get_inputs_from_text(
+        input, reward = _get_inputs_from_text(
             line, toker, vocab)
-        if args.two_turn:
-          inputs = inputs[-2:]
         features = _make_features(
-            n_example, inputs, reward, vocab, args.max_seq_len)
+            n_example, input, reward, vocab, args.max_seq_len)
         for feature in features:
           chunk.append(vars(feature))
           n_example += 1
