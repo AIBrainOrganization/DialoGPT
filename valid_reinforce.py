@@ -396,7 +396,7 @@ def attach_token(ids, token, pad_end=True):
 
 def get_values(policy_net, batch, eos, n_batch=32, GAMMA=0.999):
   # input_ids contains both state and action
-  input_ids, next_states, rewards = batch
+  input_ids, rewards = batch
   device = get_device(policy_net)
   with torch.cuda.device(device):
     input_ids = input_ids.to(device)

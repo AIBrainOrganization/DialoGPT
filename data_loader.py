@@ -87,11 +87,8 @@ class GPT2FeatureDataset(Dataset):
     input_ids = pad_sequence([torch.tensor(f.input_ids, dtype=torch.long)
                               for f in features],
                              batch_first=True, padding_value=0)
-    next_states = pad_sequence([torch.tensor(f.next_state, dtype=torch.long)
-                                for f in features],
-                               batch_first=True, padding_value=0)
     rewards = torch.tensor([f.reward for f in features], dtype=torch.half)
-    return (input_ids, next_states, rewards)
+    return (input_ids, rewards)
 
 
 class BucketingDataLoader(object):

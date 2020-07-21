@@ -31,37 +31,22 @@ def _get_file_len(corpus):
   return n_line
 
 
-def _norm_text(text):
-  w, *toks = text.strip().split()
-  try:
-    w = float(w)
-  except Exception:
-    toks = [w] + toks
-    w = 1.0
-  return w, ' '.join(toks)
-
-
 def _get_inputs_from_text(text, tokenizer, vocab):
-  srcs, tgt, next_sentence, reward = text
+  srcs, tgt, reward = text
   weights = []
   inputs = []
   for src in srcs.split(' EOS '):
-    src_weight, src = _norm_text(src)
     context_id = vocab[tokenizer(src)]
     inputs.append(context_id)
-  tgt_weight, tgt = _norm_text(tgt)
   response_id = vocab[tokenizer(tgt)]
   inputs.append(response_id)
 
-  _, next_sentence = _norm_text(next_sentence)
-  next_state = vocab[tokenizer(next_sentence)]
-
   reward = float(reward)
 
-  return inputs, next_state, reward
+  return inputs, reward
 
 
-def _make_features(id_, inputs, next_state, reward, vocab, max_len):
+def _make_features(id_, inputs, reward, vocab, max_len):
   end_of_text_id = vocab[vocab.eos_token]
   features = []
   len_ = 0
@@ -70,20 +55,20 @@ def _make_features(id_, inputs, next_state, reward, vocab, max_len):
     if len(ids) > max_len or len_ > max_len:
       sys.exit('max_len exceeded.')
     len_ += len(ids) + 1
-  feat = _make_feature(id_, inputs, next_state, reward, end_of_text_id)
+  feat = _make_feature(id_, inputs, reward, end_of_text_id)
   if feat is not None:
     features.append(feat)
 
   return features
 
 
-def _make_feature(id_, sents, next_state, reward, eos):
+def _make_feature(id_, sents, reward, eos):
   input_ids = [i for s in sents for i in s + [eos]][:-1]
 
   if len(input_ids) == 0:
     import pdb
     pdb.set_trace()
-  return InputFeatures(id_, input_ids, next_state, reward)
+  return InputFeatures(id_, input_ids, reward)
 
 
 def main(args):
@@ -117,7 +102,7 @@ def main(args):
     # if rsock.state != rsock.ST_CONNECTED:
     #   input()
 
-    for _, line in tqdm(reader.iterrows()):
+    for _, line in tqdm(reader.iterrows(), total=len(reader)):
       try:
         if len(chunk) >= args.chunk_size:
           # save and renew chunk
@@ -126,12 +111,12 @@ def main(args):
           chunk = chunk[args.chunk_size:]
           n_chunk += 1
 
-        inputs, next_state, reward = _get_inputs_from_text(
+        inputs, reward = _get_inputs_from_text(
             line, toker, vocab)
         if args.two_turn:
-          inputs = inputs[:2]
+          inputs = inputs[-2:]
         features = _make_features(
-            n_example, inputs, next_state, reward, vocab, args.max_seq_len)
+            n_example, inputs, reward, vocab, args.max_seq_len)
         for feature in features:
           chunk.append(vars(feature))
           n_example += 1
@@ -160,7 +145,7 @@ if __name__ == '__main__':
   parser.add_argument('--max_seq_len', type=int, default=128,
                       help='discard data longer than this')
   parser.add_argument('--two_turn', action='store_true',
-                      help='take only the first 2 turns')
+                      help='take only the last 2 turns')
 
   args = parser.parse_args()
 

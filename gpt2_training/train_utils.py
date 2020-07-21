@@ -79,10 +79,9 @@ class InputFeatures(object):
 
 
 class InputFeatures_train(object):
-  def __init__(self, conv_id, input_ids, next_state, reward):
+  def __init__(self, conv_id, input_ids, reward):
     self.conv_id = conv_id
     self.input_ids = input_ids
-    self.next_state = next_state
     self.reward = reward
 
 
