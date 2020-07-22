@@ -28,105 +28,13 @@ from os.path import join
 from util import get_device, concat, PADDING_TOKEN, trim, reverse, pad_sequence
 from transformers.modeling_utils import top_k_top_p_filtering
 from sklearn.metrics import f1_score
+from train_reinforce import DQN, get_model
 # from pytorch_memlab import MemReporter
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
     datefmt='%m/%d/%Y %H:%M:%S', level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-class DQN(GPT2PreTrainedModel):
-  def __init__(self, config):
-    super().__init__(config)
-    self.transformer = GPT2Model(config)
-    self.head = nn.Linear(config.n_embd, 1, bias=False)
-    self.init_weights()
-
-  def forward(
-      self,
-      input_ids=None,
-      past=None,
-      attention_mask=None,
-      token_type_ids=None,
-      position_ids=None,
-      head_mask=None,
-      inputs_embeds=None
-  ):
-    transformer_outputs = self.transformer(
-        input_ids,
-        past=past,
-        attention_mask=attention_mask,
-        token_type_ids=token_type_ids,
-        position_ids=position_ids,
-        head_mask=head_mask,
-        inputs_embeds=inputs_embeds,
-    )
-    indexes = []
-    last_index = input_ids.size(-1) - 1
-    for input_id in input_ids:
-      index = (input_id == 0).nonzero()
-      if len(index) == 0:
-        indexes.append(last_index)
-      else:
-        indexes.append(index[0].item() - 1)
-    with torch.cuda.device(transformer_outputs[0].device):
-      indexes = torch.tensor(indexes).to(transformer_outputs[0].device)
-      indexes = indexes.unsqueeze(-1).unsqueeze(-1)
-      indexes = indexes.expand(
-          (-1,) * (indexes.dim() - 1) + (transformer_outputs[0].size(-1),))
-
-      hidden_states = transformer_outputs[0].gather(-2, indexes).squeeze(-2)
-
-    return self.head(hidden_states)
-
-
-def get_model(model_path, ctx='cpu', cachedir='~/kogpt2/', fp16=True):
-  device = torch.device(ctx)
-  model_info = {
-      'url':
-      'https://kobert.blob.core.windows.net/models/kogpt2/pytorch/pytorch_kogpt2_676e9bcfa7.params',
-      'fname': 'pytorch_kogpt2_676e9bcfa7.params',
-      'chksum': '676e9bcfa7'
-  }
-
-  vocab_path = _download(vocab_info['url'],
-                         vocab_info['fname'],
-                         vocab_info['chksum'],
-                         cachedir=cachedir)
-
-  config = {
-      "initializer_range": 0.02,
-      "layer_norm_epsilon": 1e-5,
-      "n_ctx": 1024,
-      "n_embd": 768,
-      "n_head": 12,
-      "n_layer": 12,
-      "n_positions": 1024,
-      "vocab_size": 50000,
-      'embd_pdrop': 0.1,
-      'attn_pdrop': 0.1,
-      'resid_pdrop': 0.1
-  }
-  with torch.cuda.device(device):
-    model = DQN(config=GPT2Config.from_dict(config))
-    d = torch.load(model_path)
-    d = remove_module(d)
-    model.load_state_dict(d, strict=False)
-    model.to(device)
-    vocab = nlp.vocab.BERTVocab.from_sentencepiece(vocab_path,
-                                                   mask_token=None,
-                                                   sep_token=None,
-                                                   cls_token=None,
-                                                   unknown_token='<unk>',
-                                                   padding_token='<pad>',
-                                                   bos_token='<s>',
-                                                   eos_token='</s>')
-
-    if fp16:
-      logger.info('in fp16, model.half() activated')
-      model.half()
-  return model, vocab
 
 
 def get_args():
@@ -423,11 +331,14 @@ def eval_model_f1(policy_net, eval_dataloader, step, args, eos):
     values = torch.cat(values).squeeze(1)
     rewards = torch.cat(rewards).squeeze(1)
 
-    pred = (values < -1 / 3).int()
-    pred[values > 1 / 3] = 2
+    # pred = (values < -1 / 3).int()
+    # pred[values > 1 / 3] = 2
+    #
+    # true = (rewards < -1 / 3).int()
+    # true[rewards > 1 / 3] = 2
 
-    true = (rewards < -1 / 3).int()
-    true[rewards > 1 / 3] = 2
+    pred = (values < 0).int()
+    true = (rewards < 0).int()
 
     return f1_score(true, pred, average='macro')
 
@@ -458,6 +369,10 @@ def main():
     return int(x[18:x.index('.')])
 
   filenames = sorted(filenames, key=get_step)
+
+  import pdb
+  pdb.set_trace()
+
   for filename in tqdm.tqdm(filenames):
     model_path = os.path.join(args.init_checkpoint, filename)
     policy_net, vocab = get_model(model_path, device, fp16=args.fp16)
@@ -473,4 +388,7 @@ def main():
 
 
 if __name__ == '__main__':
+  logger = logging.getLogger('transformers.configuration_utils')
+  logger.setLevel(logging.WARNING)
+
   main()

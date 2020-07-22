@@ -44,7 +44,7 @@ class DQN(GPT2PreTrainedModel):
       heads.append(nn.Linear(config.n_embd, config.n_embd))
       heads.append(nn.ReLU())
     heads.append(nn.Linear(config.n_embd, 1))
-    heads.append(nn.Tanh())
+    # heads.append(nn.Tanh())
     self.head = nn.Sequential(*heads)
     self.init_weights()
 
@@ -86,7 +86,7 @@ class DQN(GPT2PreTrainedModel):
     return self.head(hidden_states)
 
 
-def get_model(ctx='cpu', cachedir='~/kogpt2/', fp16=True):
+def get_model(model_path=model_path, ctx='cpu', cachedir='~/kogpt2/', fp16=True):
   device = torch.device(ctx)
   model_info = {
       'url':
@@ -114,10 +114,10 @@ def get_model(ctx='cpu', cachedir='~/kogpt2/', fp16=True):
       "n_layer": 12,
       "n_positions": 1024,
       "vocab_size": 50000,
-      'embd_pdrop': 0.1,
-      'attn_pdrop': 0.1,
-      'resid_pdrop': 0.1,
-      'n_head_layer': 2
+      'embd_pdrop': 0.0,
+      'attn_pdrop': 0.0,
+      'resid_pdrop': 0.0,
+      'n_head_layer': 0
   }
   with torch.cuda.device(device):
     model = DQN(config=GPT2Config.from_dict(config))
@@ -213,8 +213,7 @@ def get_optimizer(parameters, fp16, loss_scale, learning_rate):
                                  static_loss_scale=loss_scale,
                                  verbose=False)
   else:
-    optimizer = Adam(parameters, learning_rate,
-                     max_grad_norm=-1)
+    optimizer = Adam(parameters, learning_rate)
   return optimizer
 
 
@@ -224,7 +223,7 @@ def get_parameters(model):
   parameters = [
       {'params': [p for n, p in param_optimizer
                   if not any(nd in n for nd in no_decay)],
-       'weight_decay': 0.01},
+       'weight_decay': 0.0},
       {'params': [p for n, p in param_optimizer
                   if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
   ]
@@ -423,21 +422,24 @@ def get_loss(policy_net, criterion, batch, eos, n_batch=32, GAMMA=0.999):
   if loss.dim() != 0:
     loss = loss.mean()
 
-  return loss
+  return loss, state_action_values
 
 
 def eval_model_loss(policy_net, eval_dataloader, criterion, epoch, args, eos):
   policy_net.eval()
   tot_loss = 0
   tot_sample = 0
+  tot_value = 0
   with torch.no_grad():
     for step, batch in enumerate(eval_dataloader):
       n_sample = batch[0].shape[0]
-      loss = get_loss(policy_net, criterion, batch, eos, n_batch=16)
+      loss, values = get_loss(policy_net, criterion, batch, eos, n_batch=16)
       tot_loss += loss.mean().item() * n_sample
       tot_sample += n_sample
+      tot_value += values.mean().item() * n_sample
   loss = tot_loss / tot_sample
-  print(f"\n Epoch {epoch}: Val loss {loss} ")
+  value = tot_value / tot_sample
+  print(f"\n Epoch {epoch}: Val loss {loss}, Value {value} ")
   return loss
 
 
@@ -453,7 +455,7 @@ def main():
   args.train_batch_size = args.train_batch_size // \
       args.gradient_accumulation_steps
 
-  policy_net, vocab = get_model(device, fp16=args.fp16)
+  policy_net, vocab = get_model(ctx=device, fp16=args.fp16)
 
   eos = vocab[vocab.eos_token]
 
@@ -501,7 +503,7 @@ def main():
     for batch in train_dataloader:
       policy_net.train()
 
-      loss = get_loss(policy_net, criterion, batch, eos)
+      loss, _ = get_loss(policy_net, criterion, batch, eos)
       if args.fp16:
         optimizer.backward(loss)
       else:
