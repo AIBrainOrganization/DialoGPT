@@ -44,7 +44,6 @@ class DQN(GPT2PreTrainedModel):
       heads.append(nn.Linear(config.n_embd, config.n_embd))
       heads.append(nn.ReLU())
     heads.append(nn.Linear(config.n_embd, 1))
-    heads.append(nn.Tanh())
     self.head = nn.Sequential(*heads)
     self.init_weights()
 
@@ -114,10 +113,10 @@ def get_model(ctx='cpu', cachedir='~/kogpt2/', fp16=True):
       "n_layer": 12,
       "n_positions": 1024,
       "vocab_size": 50000,
-      'embd_pdrop': 0.1,
-      'attn_pdrop': 0.1,
-      'resid_pdrop': 0.1,
-      'n_head_layer': 2
+      'embd_pdrop': 0.0,
+      'attn_pdrop': 0.0,
+      'resid_pdrop': 0.0,
+      'n_head_layer': 1
   }
   with torch.cuda.device(device):
     model = DQN(config=GPT2Config.from_dict(config))
@@ -224,7 +223,7 @@ def get_parameters(model):
   parameters = [
       {'params': [p for n, p in param_optimizer
                   if not any(nd in n for nd in no_decay)],
-       'weight_decay': 0.01},
+       'weight_decay': 0.0},
       {'params': [p for n, p in param_optimizer
                   if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
   ]

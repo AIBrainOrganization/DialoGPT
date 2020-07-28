@@ -112,7 +112,7 @@ def get_model(model_path, ctx='cpu', cachedir='~/kogpt2/', fp16=True):
     model = DQN(config=GPT2Config.from_dict(config))
     d = torch.load(model_path)
     d = remove_module(d)
-    model.load_state_dict(d, strict=False)
+    model.load_state_dict(d)
     model.to(device)
     vocab = nlp.vocab.BERTVocab.from_sentencepiece(vocab_path,
                                                    mask_token=None,
