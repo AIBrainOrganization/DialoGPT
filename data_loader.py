@@ -6,14 +6,13 @@ import math
 import random
 import shelve
 import torch
-
+import numpy as np
 import subprocess as sp
 
 from math import ceil
 from torch.utils.data import DataLoader, Sampler, Dataset
 from torch.nn.utils.rnn import pad_sequence
-
-from env import END_OF_TEXT_TOKEN
+from torch.utils.data.sampler import WeightedRandomSampler
 from gpt2_training.train_utils import (InputFeatures, InputFeatures_train,
                                        RedditExample)
 
@@ -56,6 +55,31 @@ class BucketSampler(Sampler):
       return sum(s // self._batch_size for s in bucket_sizes)
     else:
       return sum(math.ceil(s / self._batch_size) for s in bucket_sizes)
+
+
+class WeightedBucketSampler(BucketSampler):
+  """
+  this sampler will sort data by sequence length
+  """
+
+  def __init__(self, weights, lens, num_samples, bucket_size, batch_size,
+               droplast=False):
+    super().__init__(lens, bucket_size, batch_size, droplast)
+    self._weighted_random_sampler = WeightedRandomSampler(weights, num_samples)
+
+  def __iter__(self):
+    ids = list(self._weighted_random_sampler)
+    buckets = [sorted(ids[i:i + self._bucket_size],
+                      key=lambda i: self._lens[i], reverse=True)
+               for i in range(0, len(ids), self._bucket_size)]
+    batches = [bucket[i:i + self._batch_size]
+               for bucket in buckets
+               for i in range(0, len(bucket), self._batch_size)]
+    if self._droplast:
+      batches = [batch for batch in batches
+                 if len(batch) == self._batch_size]
+    random.shuffle(batches)
+    return iter(batches)
 
 
 class GPT2FeatureDataset(Dataset):
@@ -134,6 +158,43 @@ class BucketingDataLoader(object):
     self.db.close()
 
 
+class WeightedDataLoader(BucketingDataLoader):
+  """ this loads shelve db chunks and then convert to mini-batch loader"""
+
+  def __init__(self, db_name, batch_size, max_seq_len, exponent,
+               bucket=100):
+    super().__init__(db_name, batch_size, max_seq_len, bucket, True)
+    self.exponent = exponent
+
+  def __iter__(self):
+    keys = self._get_keys()
+    random.shuffle(keys)
+    for key in keys:
+      chunk = json.loads(gzip.decompress(self.db[key]).decode('utf-8'))
+      # discard long examples
+      trunc_chunk = []
+      lens = []
+      for feat in chunk:
+        trunc_chunk.append(feat)
+        lens.append(len(feat['input_ids']))
+
+      rewards = [feat['reward'] for feat in chunk]
+      classes, indexes, class_sample_count = np.unique(
+          rewards, return_counts=True, return_inverse=True)
+      weight = (1 / class_sample_count) ** self.exponent
+      weights = weight[indexes]
+      num_samples = int(round(sum(weights) / min(weight)))
+
+      dataset = GPT2FeatureDataset(trunc_chunk, self.max_len)
+      sampler = WeightedBucketSampler(
+          weights, lens, num_samples, self.bucket_size, self.batch_size,
+          droplast=True)
+      loader = DataLoader(dataset, batch_sampler=sampler,
+                          num_workers=0,  # can test multi-worker
+                          collate_fn=GPT2FeatureDataset.collate)
+      yield from loader
+
+
 class DistributedBucketingDataLoader(BucketingDataLoader):
   """ distributed version """
 
@@ -163,8 +224,8 @@ def convert_examples_to_features_dynamic(examples, tokenizer, vocab,
     input_ids_len = len(context_id) + len(response_id) + 2
     if input_ids_len > max_seq_length:
       if len(context_id) > input_ids_len - max_seq_length:
-        # cut context from beginning if length of context + response is too long
-        # and len of context is long enough to cut
+        # cut context from beginning if length of context + response is too
+        # long and len of context is long enough to cut
         context_id = context_id[input_ids_len - max_seq_length:]
       else:
         # cut response from end if length of context + response is too long
@@ -176,7 +237,8 @@ def convert_examples_to_features_dynamic(examples, tokenizer, vocab,
 
     input_ids = context_id + [end_of_text_id] + response_id + [end_of_text_id]
 
-    # label simplely is next token in sequences. MASK all context_id tokens except for the last one
+    # label simplely is next token in sequences. MASK all context_id tokens
+    # except for the last one
     lm_labels = [-1] * len(context_id) + response_id + [end_of_text_id] + [-1]
 
     position_ids = list(range(len(input_ids)))
