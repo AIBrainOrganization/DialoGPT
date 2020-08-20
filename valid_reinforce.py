@@ -11,9 +11,8 @@ from lsp_model import Adam
 from data_loader import BucketingDataLoader
 from gpt2_training.train_utils import boolean_string
 from os.path import join
-from sklearn.metrics import f1_score
-from train_reinforce import get_model
-from util import get_device, PADDING_TOKEN, trim, pad_sequence
+from train_reinforce import get_model, eval_model
+from util import PADDING_TOKEN, trim, pad_sequence
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -131,48 +130,6 @@ def attach_token(ids, token, pad_end=True):
       id_list.append(torch.cat((trim(id), token_tensor)))
     return pad_sequence(id_list, batch_first=True, padding_value=PADDING_TOKEN,
                         pad_end=pad_end)
-
-
-def get_values(policy_net, batch, eos, n_batch=32, GAMMA=0.999):
-  # input_ids contains both state and action
-  input_ids, rewards = batch
-  device = get_device(policy_net)
-  with torch.cuda.device(device):
-    input_ids = input_ids.to(device)
-    state_action_values = policy_net(attach_token(input_ids, eos))
-
-  with torch.no_grad():
-    with torch.cuda.device(device):
-      rewards = rewards.to(device).reshape(-1, 1)
-
-  return state_action_values, rewards
-
-
-def eval_model(policy_net, eval_dataloader, step, args, eos, criterion):
-  policy_net.eval()
-  with torch.no_grad():
-    values = []
-    rewards = []
-    for step, batch in enumerate(eval_dataloader):
-      values_batch, rewards_batch = get_values(
-          policy_net, batch, eos, n_batch=16)
-      values.append(values_batch.cpu().float())
-      rewards.append(rewards_batch.cpu().float())
-
-    values = torch.cat(values).squeeze(1)
-    rewards = torch.cat(rewards).squeeze(1)
-
-    pred = (values < -1 / 3).int()
-    pred[values > 1 / 3] = 2
-
-    true = (rewards < -1 / 3).int()
-    true[rewards > 1 / 3] = 2
-
-    # pred = (values < 0).int()
-    # true = (rewards < 0).int()
-
-    return f1_score(true, pred, average='macro'), criterion(
-        values, rewards).item()
 
 
 def main():

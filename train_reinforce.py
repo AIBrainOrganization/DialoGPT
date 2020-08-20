@@ -28,6 +28,7 @@ from config import model_path
 from data_loader import BucketingDataLoader, WeightedDataLoader
 from gpt2_training.train_utils import boolean_string
 from util import get_device, PADDING_TOKEN, trim, pad_sequence
+from sklearn.metrics import f1_score
 # from pytorch_memlab import MemReporter
 
 logging.basicConfig(
@@ -193,6 +194,9 @@ def get_args():
                       help='for torch.distributed')
   parser.add_argument('--config', help='JSON config file')
   parser.add_argument('--target_update', type=int, default=10)
+
+  # up sampling
+  parser.add_argument("--decrease_exponent", type=float, default=0)
 
   # do normal parsing
   return parser.parse_args()
@@ -443,22 +447,46 @@ def get_loss(policy_net, criterion, batch, eos, n_batch=32, GAMMA=0.999):
   return loss, state_action_values
 
 
-def eval_model_loss(policy_net, eval_dataloader, criterion, epoch, args, eos):
-  policy_net.eval()
-  tot_loss = 0
-  tot_sample = 0
-  tot_value = 0
+def get_values(policy_net, batch, eos, n_batch=32, GAMMA=0.999):
+  # input_ids contains both state and action
+  input_ids, rewards = batch
+  device = get_device(policy_net)
+  with torch.cuda.device(device):
+    input_ids = input_ids.to(device)
+    state_action_values = policy_net(attach_token(input_ids, eos))
+
   with torch.no_grad():
-    for step, batch in enumerate(eval_dataloader):
-      n_sample = batch[0].shape[0]
-      loss, values = get_loss(policy_net, criterion, batch, eos, n_batch=16)
-      tot_loss += loss.mean().item() * n_sample
-      tot_sample += n_sample
-      tot_value += values.mean().item() * n_sample
-  loss = tot_loss / tot_sample
-  value = tot_value / tot_sample
-  print(f"\n Epoch {epoch}: Val loss {loss}, Value {value} ")
-  return loss
+    with torch.cuda.device(device):
+      rewards = rewards.to(device).reshape(-1, 1)
+
+  return state_action_values, rewards
+
+
+def eval_model(policy_net, eval_dataloader, args, eos, criterion):
+  policy_net.eval()
+  with torch.no_grad():
+    values = []
+    rewards = []
+    for batch in eval_dataloader:
+      values_batch, rewards_batch = get_values(
+          policy_net, batch, eos, n_batch=16)
+      values.append(values_batch.cpu().float())
+      rewards.append(rewards_batch.cpu().float())
+
+    values = torch.cat(values).squeeze(1)
+    rewards = torch.cat(rewards).squeeze(1)
+
+    pred = (values < -1 / 3).int()
+    pred[values > 1 / 3] = 2
+
+    true = (rewards < -1 / 3).int()
+    true[rewards > 1 / 3] = 2
+
+    # pred = (values < 0).int()
+    # true = (rewards < 0).int()
+
+    return f1_score(true, pred, average='macro'), criterion(
+        values, rewards).item()
 
 
 def main():
@@ -512,15 +540,18 @@ def main():
                      total=args.num_optim_steps, desc="training")
   else:
     pbar = None
-
-  train_dataloader = WeightedDataLoader(
-      args.train_input_file, args.train_batch_size, args.max_seq_length, 1)
   eval_dataloader = BucketingDataLoader(
       args.eval_input_file, args.eval_batch_size, args.max_seq_length)
+
+  exponent = 1
 
   while True:
     tr_loss = 0.0
     nb_tr_steps = 0
+
+    train_dataloader = WeightedDataLoader(
+        args.train_input_file, args.train_batch_size, args.max_seq_length,
+        exponent)
 
     for batch in train_dataloader:
       policy_net.train()
@@ -555,15 +586,17 @@ def main():
                       for k, v in policy_net.state_dict().items()},
                      join(output_dir,
                           f'GP2-pretrain-step-{global_step}.pkl'))
-          eval_loss = eval_model_loss(
-              policy_net, eval_dataloader, criterion, epoch, args, eos)
-          print(f'{epoch},{global_step},{eval_loss}', file=eval_logger)
+          f1, eval_loss = eval_model(
+              policy_net, eval_dataloader, args, eos, criterion)
+          print(f'{epoch},{global_step},{f1},{eval_loss}', file=eval_logger)
+          print(f'{epoch},{global_step},{f1},{eval_loss}')
 
         if global_step >= args.num_optim_steps:
           break
 
     if global_step >= args.num_optim_steps:
       break
+    exponent = max(exponent - args.decrease_exponent, 0)
     epoch += 1
 
   if pbar is not None:
