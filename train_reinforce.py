@@ -1,32 +1,34 @@
+'''Train script'''
+
 import os
-import torch
+from os.path import join
+
 import argparse
 import logging
 import datetime
-import tqdm
-import types
 import random
-import sys
-import math
+
+import tqdm
 import gluonnlp as nlp
+import apex.amp as amp
+
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import apex.amp as amp
 
 from kogpt2.model.torch_gpt2 import GPT2PreTrainedModel
 from kogpt2.model.torch_gpt2 import GPT2Model, GPT2Config
 from kogpt2.utils import download as _download
 from kogpt2.utils import tokenizer as vocab_info
 from kogpt2.pytorch_kogpt2 import remove_module
-from lsp_model import Adam
-from interact import load, _score_responses  # , p
-from config import vocab_path, model_path, reverse_model_path
-from config import top_k, top_p, min_p_alpha, ALPHA, BETA, num_samples
-from data_loader import BucketingDataLoader
-from gpt2_training.train_utils import boolean_string
-from os.path import join
-from util import get_device, concat, PADDING_TOKEN, trim, reverse, pad_sequence
 from transformers.modeling_utils import top_k_top_p_filtering
+
+from lsp_model import Adam
+from config import model_path
+from data_loader import BucketingDataLoader, WeightedDataLoader
+from gpt2_training.train_utils import boolean_string
+from util import get_device, PADDING_TOKEN, trim, pad_sequence
+from sklearn.metrics import f1_score
 # from pytorch_memlab import MemReporter
 
 logging.basicConfig(
@@ -36,11 +38,27 @@ logger = logging.getLogger(__name__)
 
 
 class DQN(GPT2PreTrainedModel):
+  '''DQN'''
+
   def __init__(self, config):
     super().__init__(config)
     self.transformer = GPT2Model(config)
+    # for param in self.transformer.parameters():
+    #   param.requires_grad = False
+
+    # n_unfreeze = 6
+    # for param in self.transformer.ln_f.parameters():
+    #   param.requires_grad = True
+
+    # for idx, h in enumerate(reversed(self.transformer.h)):
+    #   if idx == n_unfreeze:
+    #     break
+
+    #   for param in h.parameters():
+    #     param.requires_grad = True
+
     heads = []
-    for l in range(config.n_head_layer - 1):
+    for _ in range(config.n_head_layer - 1):
       heads.append(nn.Linear(config.n_embd, config.n_embd))
       heads.append(nn.ReLU())
     heads.append(nn.Linear(config.n_embd, 1))
@@ -85,19 +103,9 @@ class DQN(GPT2PreTrainedModel):
     return self.head(hidden_states)
 
 
-def get_model(ctx='cpu', cachedir='~/kogpt2/', fp16=True):
+def get_model(model_path=model_path, ctx='cpu', cachedir='~/kogpt2/',
+              fp16=True):
   device = torch.device(ctx)
-  model_info = {
-      'url':
-      'https://kobert.blob.core.windows.net/models/kogpt2/pytorch/pytorch_kogpt2_676e9bcfa7.params',
-      'fname': 'pytorch_kogpt2_676e9bcfa7.params',
-      'chksum': '676e9bcfa7'
-  }
-
-  # model_path = _download(model_info['url'],
-  #                        model_info['fname'],
-  #                        model_info['chksum'],
-  #                        cachedir=cachedir)
 
   vocab_path = _download(vocab_info['url'],
                          vocab_info['fname'],
@@ -170,7 +178,8 @@ def get_args():
   parser.add_argument("--normalize_data", type=boolean_string, default=True)
   parser.add_argument("--fp16", type=boolean_string, default=True)
   parser.add_argument("--lr_schedule", type=str,
-                      choices=['noam', 'noamwd', 'BERT', 'None'], default='noam')
+                      choices=['noam', 'noamwd', 'BERT', 'None'],
+                      default='noam')
   parser.add_argument("--loss_scale", type=float, default=0)
   parser.add_argument("--no_token_id", type=boolean_string, default=True)
 
@@ -184,6 +193,9 @@ def get_args():
                       help='for torch.distributed')
   parser.add_argument('--config', help='JSON config file')
   parser.add_argument('--target_update', type=int, default=10)
+
+  # up sampling
+  parser.add_argument("--decrease_exponent", type=float, default=0)
 
   # do normal parsing
   return parser.parse_args()
@@ -202,8 +214,7 @@ def get_optimizer(parameters, fp16, loss_scale, learning_rate):
 
     optimizer = FusedAdam(parameters,
                           lr=learning_rate,
-                          bias_correction=False,
-                          max_grad_norm=1.0)
+                          bias_correction=False)
     if loss_scale == 0:
       optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True,
                                  verbose=False)
@@ -212,8 +223,7 @@ def get_optimizer(parameters, fp16, loss_scale, learning_rate):
                                  static_loss_scale=loss_scale,
                                  verbose=False)
   else:
-    optimizer = Adam(parameters, learning_rate,
-                     max_grad_norm=-1)
+    optimizer = Adam(parameters, learning_rate)
   return optimizer
 
 
@@ -251,6 +261,7 @@ def _generate_no_beam_search(
     temperature,
     top_k,
     top_p,
+    min_p,
     repetition_penalty,
     no_repeat_ngram_size,
     bos_token_id,
@@ -268,7 +279,8 @@ def _generate_no_beam_search(
   unfinished_sents = input_ids.new(batch_size).fill_(1)
   sent_lengths = input_ids.new(batch_size).fill_(max_length)
 
-  past = encoder_outputs  # defined for encoder-decoder models, None for decoder-only models
+  past = encoder_outputs
+  # defined for encoder-decoder models, None for decoder-only models
 
   position_ids = []
   while cur_len < max_length:
@@ -309,19 +321,23 @@ def _generate_no_beam_search(
           next_token_logits, batch_size, 1, input_ids, repetition_penalty)
 
     if no_repeat_ngram_size > 0:
-      # calculate a list of banned tokens to prevent repetitively generating the same ngrams
-      # from fairseq: https://github.com/pytorch/fairseq/blob/a07cb6f40480928c9e0548b737aadd36ee66ac76/fairseq/sequence_generator.py#L345
-      banned_tokens = calc_banned_tokens(
-          input_ids, batch_size, no_repeat_ngram_size, cur_len)
-      for batch_idx in range(batch_size):
-        next_token_logits[batch_idx,
-                          banned_tokens[batch_idx]] = -float("inf")
+      # calculate a list of banned tokens to prevent repetitively generating
+      # the same ngrams
+      # from fairseq: https://github.com/pytorch/fairseq/blob/a07cb6f40480928c9
+      # e0548b737aadd36ee66ac76/fairseq/sequence_generator.py#L345
+      raise Exception('calc_banned_tokens?')
+      # banned_tokens = calc_banned_tokens(
+      #     input_ids, batch_size, no_repeat_ngram_size, cur_len)
+      # for batch_idx in range(batch_size):
+      #   next_token_logits[batch_idx,
+      #                     banned_tokens[batch_idx]] = -float("inf")
     # set eos token prob to zero if min_length is not reached
     if eos_token_id is not None and cur_len < min_length:
       next_token_logits[:, eos_token_id] = -float("inf")
 
     if do_sample:
-      # Temperature (higher temperature => more likely to sample low probability tokens)
+      # Temperature (higher temperature => more likely to sample low
+      # probability tokens)
       if temperature != 1.0:
         next_token_logits = next_token_logits / temperature
 
@@ -350,7 +366,8 @@ def _generate_no_beam_search(
 
     if eos_token_id is not None:
       eos_in_sents = tokens_to_add == eos_token_id
-      # if sentence is unfinished and the token to add is eos, sent_lengths is filled with current length
+      # if sentence is unfinished and the token to add is eos, sent_lengths is
+      # filled with current length
       is_sents_unfinished_and_token_to_add_is_eos = unfinished_sents.mul(
           eos_in_sents.long()).bool()
       sent_lengths.masked_fill_(
@@ -358,21 +375,25 @@ def _generate_no_beam_search(
       # unfinished_sents is set to zero if eos in sentence
       unfinished_sents.mul_((~eos_in_sents).long())
 
-    # stop when there is a </s> in each sentence, or if we exceed the maximul length
+    # stop when there is a </s> in each sentence, or if we exceed the maximul
+    # length
     if unfinished_sents.max() == 0:
       break
 
     # extend attention_mask for new generated input if only decoder
     if self.config.is_encoder_decoder is False:
       attention_mask = torch.cat(
-          [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
+          [attention_mask, attention_mask.new_ones(
+              (attention_mask.shape[0], 1))], dim=-1
       )
 
     cur_len = cur_len + 1
 
-  # if there are different sentences lengths in the batch, some batches have to be padded
+  # if there are different sentences lengths in the batch, some batches have to
+  # be padded
   if sent_lengths.min().item() != sent_lengths.max().item():
-    assert pad_token_id is not None, "`Pad_token_id` has to be defined if batches have different lengths"
+    assert pad_token_id is not None, "`Pad_token_id` has to be defined if" \
+        " batches have different lengths"
     # finished sents are filled with pad_token
     decoded = input_ids.new(
         batch_size, sent_lengths.max().item()).fill_(pad_token_id)
@@ -422,26 +443,57 @@ def get_loss(policy_net, criterion, batch, eos, n_batch=32, GAMMA=0.999):
   if loss.dim() != 0:
     loss = loss.mean()
 
-  return loss
+  return loss, state_action_values
 
 
-def eval_model_loss(policy_net, eval_dataloader, criterion, epoch, args, eos):
-  policy_net.eval()
-  tot_loss = 0
-  tot_sample = 0
+def get_values(policy_net, batch, eos, n_batch=32, GAMMA=0.999):
+  # input_ids contains both state and action
+  input_ids, rewards = batch
+  device = get_device(policy_net)
+  with torch.cuda.device(device):
+    input_ids = input_ids.to(device)
+    state_action_values = policy_net(attach_token(input_ids, eos))
+
   with torch.no_grad():
-    for step, batch in enumerate(eval_dataloader):
-      n_sample = batch[0].shape[0]
-      loss = get_loss(policy_net, criterion, batch, eos, n_batch=16)
-      tot_loss += loss.mean().item() * n_sample
-      tot_sample += n_sample
-  loss = tot_loss / tot_sample
-  print(f"\n Epoch {epoch}: Val loss {loss} ")
-  return loss
+    with torch.cuda.device(device):
+      rewards = rewards.to(device).reshape(-1, 1)
+
+  return state_action_values, rewards
+
+
+def eval_model(policy_net, eval_dataloader, args, eos, criterion):
+  policy_net.eval()
+  with torch.no_grad():
+    values = []
+    rewards = []
+    for batch in eval_dataloader:
+      values_batch, rewards_batch = get_values(
+          policy_net, batch, eos, n_batch=16)
+      values.append(values_batch.cpu().float())
+      rewards.append(rewards_batch.cpu().float())
+
+    values = torch.cat(values).squeeze(1)
+    rewards = torch.cat(rewards).squeeze(1)
+
+    pred = (values < -1 / 3).int()
+    pred[values > 1 / 3] = 2
+
+    true = (rewards < -1 / 3).int()
+    true[rewards > 1 / 3] = 2
+
+    # pred = (values < 0).int()
+    # true = (rewards < 0).int()
+
+    return f1_score(true, pred, average='macro'), criterion(
+        values, rewards).item()
 
 
 def main():
   args = get_args()
+
+  global model_path
+  if args.init_checkpoint is not None:
+    model_path = args.init_checkpoint
 
   device = 0
   n_gpu = torch.cuda.device_count()
@@ -452,7 +504,7 @@ def main():
   args.train_batch_size = args.train_batch_size // \
       args.gradient_accumulation_steps
 
-  policy_net, vocab = get_model(device, fp16=args.fp16)
+  policy_net, vocab = get_model(model_path, ctx=device, fp16=args.fp16)
 
   eos = vocab[vocab.eos_token]
 
@@ -484,23 +536,26 @@ def main():
 
   if args.pbar:
     pbar = tqdm.tqdm(initial=global_step,
-                     total=args.num_optim_steps, desc=f"training")
+                     total=args.num_optim_steps, desc="training")
   else:
     pbar = None
-
-  train_dataloader = BucketingDataLoader(
-      args.train_input_file, args.train_batch_size, args.max_seq_length)
   eval_dataloader = BucketingDataLoader(
       args.eval_input_file, args.eval_batch_size, args.max_seq_length)
+
+  exponent = 1
 
   while True:
     tr_loss = 0.0
     nb_tr_steps = 0
 
+    train_dataloader = WeightedDataLoader(
+        args.train_input_file, args.train_batch_size, args.max_seq_length,
+        exponent)
+
     for batch in train_dataloader:
       policy_net.train()
 
-      loss = get_loss(policy_net, criterion, batch, eos)
+      loss, _ = get_loss(policy_net, criterion, batch, eos)
       if args.fp16:
         optimizer.backward(loss)
       else:
@@ -530,15 +585,17 @@ def main():
                       for k, v in policy_net.state_dict().items()},
                      join(output_dir,
                           f'GP2-pretrain-step-{global_step}.pkl'))
-          eval_loss = eval_model_loss(
-              policy_net, eval_dataloader, criterion, epoch, args, eos)
-          print(f'{epoch},{global_step},{eval_loss}', file=eval_logger)
+          f1, eval_loss = eval_model(
+              policy_net, eval_dataloader, args, eos, criterion)
+          print(f'{epoch},{global_step},{f1},{eval_loss}', file=eval_logger)
+          print(f'{epoch},{global_step},{f1},{eval_loss}')
 
         if global_step >= args.num_optim_steps:
           break
 
     if global_step >= args.num_optim_steps:
       break
+    exponent = max(exponent - args.decrease_exponent, 0)
     epoch += 1
 
   if pbar is not None:
