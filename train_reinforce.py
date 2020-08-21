@@ -121,9 +121,9 @@ def get_model(model_path=model_path, ctx='cpu', cachedir='~/kogpt2/',
       "n_layer": 12,
       "n_positions": 1024,
       "vocab_size": 50000,
-      'embd_pdrop': 0.0,
-      'attn_pdrop': 0.0,
-      'resid_pdrop': 0.0,
+      'embd_pdrop': 0.1,
+      'attn_pdrop': 0.1,
+      'resid_pdrop': 0.1,
       'n_head_layer': 1
   }
   with torch.cuda.device(device):
