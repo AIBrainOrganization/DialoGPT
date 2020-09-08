@@ -99,8 +99,6 @@ def _score_response(input,
   else:
     inputs = inputs.to(get_device(dqn))
     value = dqn(inputs)
-    print(f'{decode(inputs[0].tolist(), vocab, skip_special_tokens=False)}'
-          f'\t{value.item()}\t{loss.item()}\t{reverse_loss.item()}')
     return (BETA - 1) * \
         (ALPHA * loss + (1 - ALPHA) * reverse_loss) + \
         BETA * value
