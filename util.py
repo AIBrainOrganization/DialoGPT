@@ -7,7 +7,11 @@ PADDING_TOKEN = 0
 
 
 def get_device(model):
-  return next(model.parameters()).get_device()
+  device = next(model.parameters()).get_device()
+  if device == -1:
+    return 'cpu'
+  else:
+    return device
 
 
 def trim(sequence):
@@ -19,10 +23,11 @@ def trim(sequence):
     sequences = []
     for s in sequence:
       sequences.append(trim(s))
-    ret = pad_sequence(sequences, batch_first=True,
+    ret = pad_sequence(sequences,
+                       batch_first=True,
                        padding_value=PADDING_TOKEN)
 
-    return ret.reshape(tuple(shape[:-1]) + (-1,))
+    return ret.reshape(tuple(shape[:-1]) + (-1, ))
 
 
 def concat(a, b, eos=None):
@@ -135,6 +140,7 @@ def reverse(ids, eos):
 #     ret = ret.reshape(shape[0], shape[1], -1)
 #
 #   return ret
+
 
 def pad_sequence(sequences, batch_first=False, padding_value=0, pad_end=True):
   r"""Pad a list of variable length Tensors with ``padding_value``

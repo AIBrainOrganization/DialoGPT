@@ -1,18 +1,16 @@
 import torch
 import argparse
-import sys
 import numpy as np
-import torch.nn.functional as F
 
-from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config
 from config import device_f, device_r, num_samples
 from config import top_k, top_p, ALPHA, BETA
 from kogpt2.pytorch_kogpt2 import get_kogpt2_model
-from kogpt2.pytorch_kogpt2 import get_pytorch_kogpt2_model
+from kogpt2.model.torch_gpt2 import GPT2Config
 from gluonnlp.data import SentencepieceTokenizer
 from kogpt2.utils import get_tokenizer
-from util import get_device, concat, PADDING_TOKEN, reverse, trim
+from util import get_device, PADDING_TOKEN, reverse
 from torch.nn.utils.rnn import pad_sequence
+from train_reinforce import DQN
 
 # sys.path.append('/home/calee/git/dcinside')
 # from prof import Prof
@@ -46,8 +44,40 @@ def load(vocab_path, model_path, reverse_path, device=0):
   return vocab, model, reverse_model, end_token
 
 
+def load_dqn(dqn_model_path, device='cpu'):
+  device = torch.device(device)
+
+  config = {
+      "initializer_range": 0.02,
+      "layer_norm_epsilon": 1e-5,
+      "n_ctx": 1024,
+      "n_embd": 768,
+      "n_head": 12,
+      "n_layer": 12,
+      "n_positions": 1024,
+      "vocab_size": 50000,
+      'embd_pdrop': 0.1,
+      'attn_pdrop': 0.1,
+      'resid_pdrop': 0.1,
+      'n_head_layer': 1
+  }
+
+  dqn = DQN(config=GPT2Config.from_dict(config))
+  dqn.to(device)
+  state_dict = torch.load(dqn_model_path)
+  dqn.load_state_dict(state_dict, strict=True)
+
+  return dqn
+
+
 # 각 답변의 점수를 계산합니다.
-def _score_response(input, input_reversed, output, model, reverse_model, dqn=None):
+def _score_response(input,
+                    input_reversed,
+                    output,
+                    model,
+                    reverse_model,
+                    vocab,
+                    dqn=None):
   # input, label, mask를 준비합니다.
   device_r = get_device(reverse_model)
   output_reversed = output.to(device_r)
@@ -55,8 +85,9 @@ def _score_response(input, input_reversed, output, model, reverse_model, dqn=Non
   inputs_reversed = torch.cat((output_reversed, input_reversed[:, :-1]), dim=1)
   mask = torch.full_like(input[:, :-1], IGNORE_TOKEN, dtype=torch.long)
   labels = torch.cat((mask, output), dim=1)
-  mask_reversed = torch.full_like(
-      output_reversed[:, :-1], IGNORE_TOKEN, dtype=torch.long)
+  mask_reversed = torch.full_like(output_reversed[:, :-1],
+                                  IGNORE_TOKEN,
+                                  dtype=torch.long)
   labels_reversed = torch.cat((mask_reversed, input_reversed), dim=1)
 
   # 점수로 활용될 loss 값을 계산합니다.
@@ -68,6 +99,8 @@ def _score_response(input, input_reversed, output, model, reverse_model, dqn=Non
   else:
     inputs = inputs.to(get_device(dqn))
     value = dqn(inputs)
+    print(f'{decode(inputs[0].tolist(), vocab, skip_special_tokens=False)}'
+          f'\t{value.item()}\t{loss.item()}\t{reverse_loss.item()}')
     return (BETA - 1) * \
         (ALPHA * loss + (1 - ALPHA) * reverse_loss) + \
         BETA * value
@@ -97,7 +130,8 @@ def eos_end(id, indexes, eos):
 #
 #     sequences.append(id)
 #
-#   ret = pad_sequence(sequences, batch_first=True, padding_value=PADDING_TOKEN)
+#   ret = pad_sequence(sequences, batch_first=True,
+#                      padding_value=PADDING_TOKEN)
 #   if len(original_shape) > 2:
 #     ret = ret.reshape(list(original_shape[:-1]) + [-1])
 #
@@ -114,7 +148,7 @@ def prepare_inputs(outputs, eos):
   sequences = []
   for output in outputs:
     output = output[output != PADDING_TOKEN]
-    label = np.full((output.shape[0] - 1,), IGNORE_TOKEN)
+    label = np.full((output.shape[0] - 1, ), IGNORE_TOKEN)
     eos_indexes = np.where(output == eos)[0]
     if eos_end(output, eos_indexes, eos):
       i = 2
@@ -128,7 +162,8 @@ def prepare_inputs(outputs, eos):
     labels.append(torch.tensor(label))
     sequences.append(torch.tensor(output))
 
-  outputs = pad_sequence(sequences, batch_first=True,
+  outputs = pad_sequence(sequences,
+                         batch_first=True,
                          padding_value=PADDING_TOKEN).to(device)
   labels = pad_sequence(labels, batch_first=True,
                         padding_value=IGNORE_TOKEN).to(device)
@@ -136,7 +171,7 @@ def prepare_inputs(outputs, eos):
   labels_reversed = []
   sequences_reversed = []
   for output in outputs_reversed:
-    label = np.full((output.shape[0] - 1,), IGNORE_TOKEN)
+    label = np.full((output.shape[0] - 1, ), IGNORE_TOKEN)
     eos_indexes = np.where(output == eos)[0]
     start_index = eos_indexes[0] + 1
     end_index = len(output)
@@ -145,12 +180,15 @@ def prepare_inputs(outputs, eos):
 
     labels_reversed.append(torch.tensor(label))
     sequences_reversed.append(torch.tensor(output))
-  outputs_reversed = pad_sequence(sequences_reversed, batch_first=True,
+  outputs_reversed = pad_sequence(sequences_reversed,
+                                  batch_first=True,
                                   padding_value=PADDING_TOKEN).to(device)
-  labels_reversed = pad_sequence(
-      labels_reversed, batch_first=True, padding_value=IGNORE_TOKEN).to(device)
+  labels_reversed = pad_sequence(labels_reversed,
+                                 batch_first=True,
+                                 padding_value=IGNORE_TOKEN).to(device)
 
   return outputs, labels, outputs_reversed, labels_reversed
+
 
 # def prepare_inputs(outputs, eos):
 #   p.tick('reverse')
@@ -226,7 +264,10 @@ def _score_responses(outputs, model, reverse_model, eos, dqn=None):
 
 
 # 히스토리에 새 문장을 추가해줍니다.
-def append_messages(old_list: list, new_list: list, vocab, end_token,
+def append_messages(old_list: list,
+                    new_list: list,
+                    vocab,
+                    end_token,
                     truncate_length=64):
   for message in new_list:
     if message != '':
@@ -265,63 +306,83 @@ def decode(ids, vocab, skip_special_tokens=True):
 
 
 # 답변 문장을 생성합니다.
-def generate_message(message_list: list, model, reverse_model, vocab,
+def generate_message(message_list: list,
+                     model,
+                     reverse_model,
+                     vocab,
+                     dqn,
                      focus_last_message=True):
-  total_input = torch.cat(message_list, dim=1).to(device_f)
-  if focus_last_message:
-    total_input_reversed = message_list[-1]
-  else:
-    total_input_reversed = torch.cat(list(reversed(message_list)), dim=1)
+  with torch.no_grad():
+    total_input = torch.cat(message_list, dim=1).to(device_f)
+    if focus_last_message:
+      total_input_reversed = message_list[-1]
+    else:
+      total_input_reversed = torch.cat(list(reversed(message_list)), dim=1)
 
-  # https://huggingface.co/transformers/main_classes/model.html?highlight=generate#transformers.PreTrainedModel.generate
-  # 후보 답변 문장들을 생성합니다.
-  outputs = model.generate(input_ids=total_input,
-                           min_length=total_input.shape[1] + 8,
-                           max_length=total_input.shape[1] + 40,
-                           num_return_sequences=num_samples,
-                           top_k=top_k,
-                           top_p=top_p,
-                           do_sample=True,
-                           repetition_penalty=1.2,
-                           pad_token_id=PADDING_TOKEN,
-                           eos_token_id=vocab[vocab.eos_token])
-  outputs = outputs[:, total_input.shape[1]:]
+    # https://huggingface.co/transformers/main_classes/model.html?highlight=
+    # generate#transformers.PreTrainedModel.generate
+    # 후보 답변 문장들을 생성합니다.
+    outputs = model.generate(input_ids=total_input,
+                             min_length=total_input.shape[1] + 8,
+                             max_length=total_input.shape[1] + 40,
+                             num_return_sequences=num_samples,
+                             top_k=top_k,
+                             top_p=top_p,
+                             do_sample=True,
+                             repetition_penalty=1.2,
+                             pad_token_id=PADDING_TOKEN,
+                             eos_token_id=vocab[vocab.eos_token])
+    outputs = outputs[:, total_input.shape[1]:]
 
-  # 각 문장에 대해 점수를 계산합니다.
-  scores = []
-  for output in outputs:
-    output = output.unsqueeze(0).to(device_f)
-    try:
-      output = output[:, :output[0].tolist().index(vocab[vocab.eos_token]) + 1]
-    except:
-      pass
-    scores.append(_score_response(
-        total_input, total_input_reversed.to(device_r), output,
-        model, reverse_model))
-  scores = torch.stack(scores, dim=0)
+    # 각 문장에 대해 점수를 계산합니다.
+    scores = []
+    for output in outputs:
+      output = output.unsqueeze(0).to(device_f)
+      try:
+        output = output[:, :output[0].tolist().index(vocab[vocab.eos_token]) +
+                        1]
+      except Exception:
+        pass
+      scores.append(
+          _score_response(total_input, total_input_reversed.to(device_r),
+                          output, model, reverse_model, vocab, dqn))
+    scores = torch.stack(scores, dim=0)
 
-  # 가장 점수가 높은 문장을 선택합니다.
-  winner = torch.argmax(scores).item()
-  out = outputs[winner]
+    # 가장 점수가 높은 문장을 선택합니다.
+    winner = torch.argmax(scores).item()
+    out = outputs[winner]
 
-  return decode(out.tolist(), vocab)
+    return decode(out.tolist(), vocab)
 
 
 if __name__ == '__main__':
-  parser = argparse.ArgumentParser(
-      description='Interact with the model.')
-  parser.add_argument('vocab_path', metavar='vocab_path', type=str,
+  parser = argparse.ArgumentParser(description='Interact with the model.')
+  parser.add_argument('vocab_path',
+                      metavar='vocab_path',
+                      type=str,
                       help='Vocabulary path')
-  parser.add_argument('model_path', metavar='model_path',
-                      type=str, help='Model path')
-  parser.add_argument('reverse_model_path', metavar='reverse_model_path',
-                      type=str, help='Reverse model path')
+  parser.add_argument('model_path',
+                      metavar='model_path',
+                      type=str,
+                      help='Model path')
+  parser.add_argument('reverse_model_path',
+                      metavar='reverse_model_path',
+                      type=str,
+                      help='Reverse model path')
+  parser.add_argument('dqn_model_path',
+                      metavar='dqn_model_path',
+                      type=str,
+                      help='DQN model path')
 
   args = parser.parse_args()
 
   # 사전, 모델 파일 및 end_token을 불러옵니다.
-  vocab, model, reverse_model, end_token = load(
-      args.vocab_path, args.model_path, args.reverse_model_path)
+  vocab, model, reverse_model, end_token = load(args.vocab_path,
+                                                args.model_path,
+                                                args.reverse_model_path)
+
+  dqn = load_dqn(args.dqn_model_path)
+  dqn.eval()
 
   my_message_list = []  # 대화 히스토리 리스트
   while True:
@@ -330,8 +391,8 @@ if __name__ == '__main__':
     append_messages(my_message_list, [my_message], vocab, end_token)
 
     # 대화 히스토리를 바탕으로 답변을 생성합니다.
-    my_response = generate_message(
-        my_message_list, model, reverse_model, vocab, False)
+    my_response = generate_message(my_message_list, model, reverse_model, dqn,
+                                   vocab, False)
     print('bot >>', my_response)
 
     # 답변을 대화 히스토리에 추가합니다.

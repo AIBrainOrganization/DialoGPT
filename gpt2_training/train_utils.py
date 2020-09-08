@@ -79,6 +79,21 @@ class InputFeatures(object):
 
 
 class InputFeatures_train(object):
+    def __init__(self, conv_id, input_ids, position_ids, token_type_ids,
+                 lm_labels, weights, input_len=None):
+        self.conv_id = conv_id
+        self.input_ids = input_ids
+        self.position_ids = position_ids
+        self.token_type_ids = token_type_ids
+        self.lm_labels = lm_labels
+        self.weights = weights
+        if input_len is None:
+            self.input_len = len(input_ids)
+        else:
+            self.input_len = input_len
+
+
+class ReinforceInputFeatures_train(object):
   def __init__(self, conv_id, input_ids, reward):
     self.conv_id = conv_id
     self.input_ids = input_ids

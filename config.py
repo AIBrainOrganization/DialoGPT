@@ -3,12 +3,12 @@ device_f = 0
 device_r = 0
 
 # sampling parameters
-top_k = 0
+top_k = 50
 
-num_samples = 20
+num_samples = 40
 ALPHA = 0.5  # 1에 가까우면 기본 모델에 집중하고 0에 가까우면 reverse 모델에 집중합니다.
 BETA = 0.5  # 전체에서 Q function 비중
-top_p = 1.0
+top_p = 0.9
 
 min_p_alpha = 2
 
@@ -22,3 +22,5 @@ reverse_model_path = 'models/output_model/' \
 #     'GPT2.1e-05.64.2gpu.2020-05-19161142/GP2-pretrain-step-61920.pkl'
 # reverse_model_path = 'models/dcinside-news_new/' \
 #     'GPT2.1e-05.64.2gpu.2020-05-20084102/GP2-pretrain-step-61920.pkl'
+dqn_model_path = 'models/reinforce/acryl/' \
+    'GPT2.1e-05.64.2gpu.2020-08-21131431/GP2-pretrain-step-2538.pkl'

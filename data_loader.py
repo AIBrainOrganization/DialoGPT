@@ -91,6 +91,57 @@ class GPT2FeatureDataset(Dataset):
 
   def __getitem__(self, i):
     feat_dict = self.features[i]
+    if self.max_len is not None and feat_dict['input_len'] > self.max_len:
+      # tuncate on the left side (context)
+      feat_dict['input_ids'] = feat_dict['input_ids'][-self.max_len:]
+      feat_dict['position_ids'] = feat_dict['position_ids'][
+          -self.max_len:]
+      feat_dict['token_type_ids'] = feat_dict['token_type_ids'][
+          -self.max_len:]
+      feat_dict['lm_labels'] = feat_dict['lm_labels'][-self.max_len:]
+    try:
+      for s in ['context_len', 'response_len']:
+        if s in feat_dict.keys():
+          print("db file missing " + s)
+          del feat_dict[s]
+    except Exception:
+      import pdb
+      pdb.set_trace()
+
+    feat = InputFeatures_train(**feat_dict)
+    return feat
+
+  def __len__(self):
+    return len(self.features)
+
+  @staticmethod
+  def collate(features):
+    input_ids = pad_sequence([torch.tensor(f.input_ids, dtype=torch.long)
+                              for f in features],
+                             batch_first=True, padding_value=0)
+    position_ids = pad_sequence([torch.tensor(f.position_ids,
+                                              dtype=torch.long)
+                                 for f in features],
+                                batch_first=True, padding_value=0)
+    token_type_ids = pad_sequence([torch.tensor(f.token_type_ids,
+                                                dtype=torch.long)
+                                   for f in features],
+                                  batch_first=True, padding_value=0)
+    labels = pad_sequence([torch.tensor(f.lm_labels, dtype=torch.long)
+                           for f in features],
+                          batch_first=True, padding_value=-1)
+    return input_ids, position_ids, token_type_ids, labels
+
+
+class ReinforceFeatureDataset(Dataset):
+  """ pytorch dataset for Reinforcement training """
+
+  def __init__(self, features, max_len=None):
+    self.features = features
+    self.max_len = max_len  # this max_len do truncate
+
+  def __getitem__(self, i):
+    feat_dict = self.features[i]
     try:
       for s in ['context_len', 'response_len']:
         if s in feat_dict.keys():
