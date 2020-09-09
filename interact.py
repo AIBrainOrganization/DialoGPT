@@ -3,7 +3,7 @@ import argparse
 import numpy as np
 
 from config import device_f, device_r, num_samples
-from config import top_k, top_p, ALPHA, BETA
+from config import top_k, top_p, ALPHA, BETA, min_p_alpha
 from kogpt2.pytorch_kogpt2 import get_kogpt2_model
 from kogpt2.model.torch_gpt2 import GPT2Config
 from gluonnlp.data import SentencepieceTokenizer
@@ -304,6 +304,46 @@ def decode(ids, vocab, skip_special_tokens=True):
 
 
 # 답변 문장을 생성합니다.
+@torch.no_grad()
+def generate_messages(message_lists: list,
+                      model,
+                      reverse_model,
+                      vocab,
+                      dqn,
+                      focus_last_message=True):
+  ret = []
+  total_input = []
+  for message_list in message_lists:
+    total_input.append(torch.cat(message_list[-1:], dim=1).to(device_f)[0])
+  total_input = pad_sequence(total_input,
+                             batch_first=True,
+                             padding_value=PADDING_TOKEN)
+
+  min_p = min_p_alpha / model.lm_head.out_features
+
+  # https://huggingface.co/transformers/main_classes/model.html?highlight=
+  # generate#transformers.PreTrainedModel.generate
+  # 후보 답변 문장들을 생성합니다.
+  outputs = model.generate(input_ids=total_input,
+                           min_length=total_input.shape[1] + 6,
+                           max_length=total_input.shape[1] + 9,
+                           num_return_sequences=num_samples,
+                           top_k=top_k,
+                           top_p=top_p,
+                           min_p=min_p,
+                           do_sample=True,
+                           repetition_penalty=1,
+                           pad_token_id=PADDING_TOKEN,
+                           eos_token_id=vocab[vocab.eos_token])
+  for output in outputs:
+    out = output[total_input.shape[1]:]
+
+    ret.append(decode(out.tolist(), vocab))
+
+  return ret
+
+
+# 답변 문장을 생성합니다.
 def generate_message(message_list: list,
                      model,
                      reverse_model,
@@ -317,6 +357,8 @@ def generate_message(message_list: list,
     else:
       total_input_reversed = torch.cat(list(reversed(message_list)), dim=1)
 
+    min_p = min_p_alpha / model.lm_head.out_features
+
     # https://huggingface.co/transformers/main_classes/model.html?highlight=
     # generate#transformers.PreTrainedModel.generate
     # 후보 답변 문장들을 생성합니다.
@@ -326,6 +368,7 @@ def generate_message(message_list: list,
                              num_return_sequences=num_samples,
                              top_k=top_k,
                              top_p=top_p,
+                             min_p=min_p,
                              do_sample=True,
                              repetition_penalty=1.2,
                              pad_token_id=PADDING_TOKEN,

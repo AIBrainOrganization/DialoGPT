@@ -3,14 +3,14 @@ device_f = 0
 device_r = 0
 
 # sampling parameters
-top_k = 50
+top_k = 0
 
-num_samples = 40
+num_samples = 1
 ALPHA = 0.5  # 1에 가까우면 기본 모델에 집중하고 0에 가까우면 reverse 모델에 집중합니다.
 BETA = 0.5  # 전체에서 Q function 비중
-top_p = 0.9
+top_p = 1
 
-min_p_alpha = 2
+min_p_alpha = 256  # 2
 
 # default paths
 vocab_path = 'models/kogpt2_news_wiki_ko_cased_818bfa919d.spiece'

@@ -259,6 +259,420 @@ def get_parameters(model):
   return parameters
 
 
+@torch.no_grad()
+def generate(
+    self,
+    input_ids=None,
+    max_length=None,
+    min_length=None,
+    do_sample=None,
+    early_stopping=None,
+    num_beams=None,
+    temperature=None,
+    top_k=None,
+    top_p=None,
+    min_p=None,
+    repetition_penalty=None,
+    bos_token_id=None,
+    pad_token_id=None,
+    eos_token_id=None,
+    length_penalty=None,
+    no_repeat_ngram_size=None,
+    num_return_sequences=None,
+    attention_mask=None,
+    decoder_start_token_id=None,
+):
+  r""" Generates sequences for models with a LM head. The method currently
+  supports greedy decoding, beam-search decoding, sampling with temperature,
+  sampling with top-k or nucleus sampling.
+
+  Adapted in part from `Facebook's XLM beam search code`_.
+
+  .. _`Facebook's XLM beam search code`:
+      https://github.com/facebookresearch/XLM/blob/9e6f6814d17be4fe5b15f2e6c43e
+      b2b2d76daeb4/src/model/transformer.py#L529
+
+
+  Parameters:
+
+      input_ids: (`optional`) `torch.LongTensor` of shape
+          `(batch_size, sequence_length)`
+          The sequence used as a prompt for the generation. If `None` the
+          method initializes
+          it as an empty `torch.LongTensor` of shape `(1,)`.
+
+      max_length: (`optional`) int
+          The max length of the sequence to be generated.  Between `min_length`
+          and infinity. Default to 20.
+
+      min_length: (`optional`) int
+          The min length of the sequence to be generated.  Between 0 and
+          infinity. Default to 0.
+
+      do_sample: (`optional`) bool
+          If set to `False` greedy decoding is used. Otherwise sampling is
+          used. Defaults to `False` as defined in
+          `configuration_utils.PretrainedConfig`.
+
+      early_stopping: (`optional`) bool
+          if set to `True` beam search is stopped when at least `num_beams`
+          sentences finished per batch. Defaults to `False` as defined in
+          `configuration_utils.PretrainedConfig`.
+
+      num_beams: (`optional`) int
+          Number of beams for beam search. Must be between 1 and infinity.
+          1 means no beam search. Default to 1.
+
+      temperature: (`optional`) float
+          The value used to module the next token probabilities. Must be
+          strictly positive. Default to 1.0.
+
+      top_k: (`optional`) int
+          The number of highest probability vocabulary tokens to keep for
+          top-k-filtering. Between 1 and infinity. Default to 50.
+
+      top_p: (`optional`) float
+          The cumulative probability of parameter highest probability
+          vocabulary tokens to keep for nucleus sampling. Must be between
+          0 and 1. Default to 1.
+
+      repetition_penalty: (`optional`) float
+          The parameter for repetition penalty. Between 1.0 and infinity.
+          1.0 means no penalty. Default to 1.0.
+
+      pad_token_id: (`optional`) int
+          Padding token. Default to specicic model pad_token_id or None if it
+          does not exist.
+
+      bos_token_id: (`optional`) int
+          BOS token. Defaults to bos_token_id as defined in the models config.
+
+      pad_token_id: (`optional`) int
+          Pad token. Defaults to pad_token_id as defined in the models config.
+
+      eos_token_ids: (`optional`) int or list of int
+          End of sequence token or list of tokens to stop the generation.
+          Default to eos_token_ids as defined in the models config.
+
+      length_penalty: (`optional`) float
+          Exponential penalty to the length. Default to 1.
+
+      no_repeat_ngram_size: (`optional`) int
+          If set to int > 0, all ngrams of size `no_repeat_ngram_size` can
+          only occur once.
+
+      num_return_sequences: (`optional`) int
+          The number of independently computed returned sequences for each
+          element in the batch. Default to 1.
+
+      attention_mask (`optional`) obj: `torch.LongTensor` of same shape as
+          `input_ids`
+          Mask to avoid performing attention on padding token indices.
+          Mask values selected in ``[0, 1]``:
+          ``1`` for tokens that are NOT MASKED, ``0`` for MASKED tokens.
+          Defaults to `None`.
+
+      `What are attention masks? <../glossary.html#attention-mask>`__
+
+      decoder_start_token_id=None: (`optional`) int
+          If an encoder-decoder model starts decoding with a different token
+          than BOS.
+          Defaults to `None` and is changed to `BOS` later.
+
+  Return:
+
+      output: `torch.LongTensor` of shape `(batch_size * num_return_sequences,
+          equence_length)`
+          sequence_length is either equal to max_length or shorter if all
+          batches finished early due to the `eos_token_id`
+
+  Examples::
+      # Initialize tokenizer
+      tokenizer = AutoTokenizer.from_pretrained('distilgpt2')
+      # Download model and configuration from S3 and cache.
+      model = AutoModelWithLMHead.from_pretrained('distilgpt2')
+      outputs = model.generate(max_length=40)  # do greedy decoding
+      print('Generated: {}'.format(tokenizer.decode(outputs[0],
+          skip_special_tokens=True)))
+      # Initialize tokenizer
+      tokenizer = AutoTokenizer.from_pretrained('openai-gpt')
+      # Download model and configuration from S3 and cache.
+      model = AutoModelWithLMHead.from_pretrained('openai-gpt')
+      input_context = 'The dog'
+      # encode input context
+      input_ids = tokenizer.encode(input_context, return_tensors='pt')
+      # generate 3 independent sequences using beam search decoding (5 beams)
+      # with sampling from initial context 'The dog'
+      outputs = model.generate(input_ids=input_ids, num_beams=5,
+          num_return_sequences=3, temperature=1.5)
+      for i in range(3): #  3 output sequences were generated
+          print('Generated {}: {}'.format(i, tokenizer.decode(outputs[i],
+              skip_special_tokens=True)))
+      # Initialize tokenizer
+      tokenizer = AutoTokenizer.from_pretrained('distilgpt2')
+      # Download model and configuration from S3 and cache.
+      model = AutoModelWithLMHead.from_pretrained('distilgpt2')
+      input_context = 'The dog'
+      # encode input context
+      input_ids = tokenizer.encode(input_context, return_tensors='pt')
+      # 3 generate sequences using by sampling
+      outputs = model.generate(input_ids=input_ids, max_length=40,
+          temperature=0.7, num_return_sequences=3)
+      for i in range(3): #  3 output sequences were generated
+          print('Generated {}: {}'.format(i, tokenizer.decode(outputs[i],
+              skip_special_tokens=True)))
+
+      # Initialize tokenizer
+      tokenizer = AutoTokenizer.from_pretrained('ctrl')
+      # Download model and configuration from S3 and cache.
+      model = AutoModelWithLMHead.from_pretrained('ctrl')
+      # "Legal" is one of the control codes for ctrl
+      input_context = 'Legal My neighbor is'
+      # encode input context
+      input_ids = tokenizer.encode(input_context, return_tensors='pt')
+      # generate sequences
+      outputs = model.generate(input_ids=input_ids, max_length=50,
+          temperature=0.7, repetition_penalty=1.2)
+      print('Generated: {}'.format(tokenizer.decode(outputs[0],
+          skip_special_tokens=True)))
+
+  """
+
+  # We cannot generate if the model does not have a LM head
+  if self.get_output_embeddings() is None:
+    raise AttributeError(
+        "You tried to generate sequences with a model that does not have a LM"
+        " Head."
+        "Please use another model class (e.g. `OpenAIGPTLMHeadModel`,"
+        " `XLNetLMHeadModel`, `GPT2LMHeadModel`, `CTRLLMHeadModel`,"
+        " `T5WithLMHeadModel`, `TransfoXLLMHeadModel`, `XLMWithLMHeadModel`,"
+        " `BartForConditionalGeneration` )")
+
+  max_length = max_length if max_length is not None else self.config.max_length
+  min_length = min_length if min_length is not None else self.config.min_length
+  do_sample = do_sample if do_sample is not None else self.config.do_sample
+  early_stopping = (early_stopping if early_stopping is not None else
+                    self.config.early_stopping)
+  num_beams = num_beams if num_beams is not None else self.config.num_beams
+  temperature = (temperature
+                 if temperature is not None else self.config.temperature)
+  top_k = top_k if top_k is not None else self.config.top_k
+  top_p = top_p if top_p is not None else self.config.top_p
+  repetition_penalty = (repetition_penalty if repetition_penalty is not None
+                        else self.config.repetition_penalty)
+  bos_token_id = (bos_token_id
+                  if bos_token_id is not None else self.config.bos_token_id)
+  pad_token_id = (pad_token_id
+                  if pad_token_id is not None else self.config.pad_token_id)
+  eos_token_id = (eos_token_id
+                  if eos_token_id is not None else self.config.eos_token_id)
+  length_penalty = (length_penalty if length_penalty is not None else
+                    self.config.length_penalty)
+  no_repeat_ngram_size = (no_repeat_ngram_size if no_repeat_ngram_size
+                          is not None else self.config.no_repeat_ngram_size)
+  num_return_sequences = (num_return_sequences if num_return_sequences
+                          is not None else self.config.num_return_sequences)
+  decoder_start_token_id = (decoder_start_token_id if decoder_start_token_id
+                            is not None else bos_token_id)
+
+  if input_ids is not None:
+    batch_size = input_ids.shape[0]  # overriden by the input batch_size
+  else:
+    batch_size = 1
+
+  assert isinstance(
+      max_length, int
+  ) and max_length > 0, "`max_length` should be a strictly positive integer."
+  assert isinstance(
+      min_length,
+      int) and min_length >= 0, "`min_length` should be a positive integer."
+  assert isinstance(do_sample, bool), "`do_sample` should be a boolean."
+  assert isinstance(early_stopping,
+                    bool), "`early_stopping` should be a boolean."
+  assert isinstance(
+      num_beams, int
+  ) and num_beams > 0, "`num_beams` should be a strictly positive integer."
+  assert temperature > 0, "`temperature` should be strictly positive."
+  assert isinstance(
+      top_k, int) and top_k >= 0, "`top_k` should be a positive integer."
+  assert 0 <= top_p <= 1, "`top_p` should be between 0 and 1."
+  assert repetition_penalty >= 1.0, "`repetition_penalty` should be >= 1."
+  assert input_ids is not None or (
+      isinstance(bos_token_id, int) and bos_token_id >= 0
+  ), "If input_ids is not defined, `bos_token_id` should be a positive" \
+      " integer."
+  assert pad_token_id is None or (
+      isinstance(pad_token_id, int) and
+      (pad_token_id >= 0)), "`pad_token_id` should be a positive integer."
+  assert (
+      decoder_start_token_id is not None
+      or self.config.is_encoder_decoder is False
+  ), "`decoder_start_token_id` has to be defined if model is encoder-decoder" \
+      " model"
+  assert (eos_token_id is None) or (
+      isinstance(eos_token_id, int) and
+      (eos_token_id >= 0)), "`eos_token_id` should be a positive integer."
+  assert length_penalty > 0, "`length_penalty` should be strictly positive."
+  assert (isinstance(no_repeat_ngram_size, int) and no_repeat_ngram_size >= 0
+          ), "`no_repeat_ngram_size` should be a positive integer."
+  assert (isinstance(num_return_sequences, int) and num_return_sequences > 0
+          ), "`num_return_sequences` should be a strictly positive integer."
+
+  if input_ids is None:
+    assert isinstance(bos_token_id, int) and bos_token_id >= 0, (
+        "you should either supply a context to complete as `input_ids` input "
+        "or a `bos_token_id` (integer >= 0) as a first token to start the"
+        " generation.")
+    input_ids = torch.full(
+        (batch_size, 1),
+        bos_token_id,
+        dtype=torch.long,
+        device=next(self.parameters()).device,
+    )
+  else:
+    assert input_ids.dim(
+    ) == 2, "Input prompt should be of shape (batch_size, sequence length)."
+
+  # not allow to duplicate outputs when greedy decoding
+  if do_sample is False:
+    if num_beams == 1:
+      # no_beam_search greedy generation conditions
+      assert (
+          num_return_sequences == 1
+      ), "Greedy decoding will always produce the same output for" \
+          " num_beams == 1 and num_return_sequences > 1. Please set" \
+          " num_return_sequences = 1"
+
+    else:
+      # beam_search greedy generation conditions
+      assert (
+          num_beams >= num_return_sequences
+      ), "Greedy beam search decoding cannot return more sequences than it" \
+          " has beams. Please set num_beams >= num_return_sequences"
+
+  # create attention mask if necessary
+  # TODO (PVP): this should later be handled by the forward fn() in each model
+  # in the future see PR 3140
+  if (attention_mask is None) and (pad_token_id
+                                   is not None) and (pad_token_id
+                                                     in input_ids):
+    attention_mask = input_ids.ne(pad_token_id).long()
+  elif attention_mask is None:
+    attention_mask = input_ids.new_ones(input_ids.shape)
+
+  # set pad_token_id to eos_token_id if not set. Important that this is done
+  # after attention_mask is created
+  if pad_token_id is None and eos_token_id is not None:
+    logger.warning(
+        "Setting `pad_token_id` to {} (first `eos_token_id`) to generate"
+        " sequence".format(eos_token_id))
+    pad_token_id = eos_token_id
+
+  # current position and vocab size
+  vocab_size = self.config.vocab_size
+
+  # set effective batch size and effective batch multiplier according to
+  # do_sample
+  if do_sample:
+    effective_batch_size = batch_size * num_return_sequences
+    effective_batch_mult = num_return_sequences
+  else:
+    effective_batch_size = batch_size
+    effective_batch_mult = 1
+
+  # Expand input ids if num_beams > 1 or num_return_sequences > 1
+  if num_return_sequences > 1 or num_beams > 1:
+    input_ids_len = input_ids.shape[-1]
+    input_ids = input_ids.unsqueeze(1).expand(batch_size,
+                                              effective_batch_mult * num_beams,
+                                              input_ids_len)
+    attention_mask = attention_mask.unsqueeze(1).expand(
+        batch_size, effective_batch_mult * num_beams, input_ids_len)
+
+    input_ids = input_ids.contiguous().view(
+        effective_batch_size * num_beams, input_ids_len
+    )  # shape: (batch_size * num_return_sequences * num_beams, cur_len)
+    attention_mask = attention_mask.contiguous().view(
+        effective_batch_size * num_beams, input_ids_len
+    )  # shape: (batch_size * num_return_sequences * num_beams, cur_len)
+
+  if self.config.is_encoder_decoder:
+    assert bos_token_id is not None, "Encoder Decoder Models need" \
+        " to have a bos_token_id"
+    assert hasattr(
+        self, "get_encoder"
+    ), "{} should have a 'get_encoder' function defined".format(self)
+    assert callable(self.get_encoder), "{} should be a method".format(
+        self.get_encoder)
+
+    # get encoder and store encoder outputs
+    encoder = self.get_encoder()
+
+    encoder_outputs = encoder(input_ids, attention_mask=attention_mask)
+
+    # create empty decoder_input_ids
+    input_ids = torch.full(
+        (effective_batch_size * num_beams, 1),
+        decoder_start_token_id,
+        dtype=torch.long,
+        device=next(self.parameters()).device,
+    )
+    cur_len = 1
+  else:
+    encoder_outputs = None
+    cur_len = input_ids.shape[-1]
+
+  if num_beams > 1:
+    output = self._generate_beam_search(
+        input_ids,
+        cur_len=cur_len,
+        max_length=max_length,
+        min_length=min_length,
+        do_sample=do_sample,
+        early_stopping=early_stopping,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
+        no_repeat_ngram_size=no_repeat_ngram_size,
+        bos_token_id=bos_token_id,
+        pad_token_id=pad_token_id,
+        decoder_start_token_id=decoder_start_token_id,
+        eos_token_id=eos_token_id,
+        batch_size=effective_batch_size,
+        num_return_sequences=num_return_sequences,
+        length_penalty=length_penalty,
+        num_beams=num_beams,
+        vocab_size=vocab_size,
+        encoder_outputs=encoder_outputs,
+        attention_mask=attention_mask,
+    )
+  else:
+    output = _generate_no_beam_search(
+        self,
+        input_ids,
+        cur_len=cur_len,
+        max_length=max_length,
+        min_length=min_length,
+        do_sample=do_sample,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        min_p=min_p,
+        repetition_penalty=repetition_penalty,
+        no_repeat_ngram_size=no_repeat_ngram_size,
+        bos_token_id=bos_token_id,
+        pad_token_id=pad_token_id,
+        decoder_start_token_id=decoder_start_token_id,
+        eos_token_id=eos_token_id,
+        batch_size=effective_batch_size,
+        encoder_outputs=encoder_outputs,
+        attention_mask=attention_mask,
+    )
+
+  return output
+
+
 def min_p_filtering(logits, min_p=0, filter_value=-float("Inf")):
   if min_p > 0:
     probs = F.softmax(logits, dim=-1)
@@ -402,11 +816,11 @@ def _generate_no_beam_search(
 
     # extend attention_mask for new generated input if only decoder
     if self.config.is_encoder_decoder is False:
-      attention_mask = torch.cat([
+      tensors = [
           attention_mask,
           attention_mask.new_ones((attention_mask.shape[0], 1))
-      ],
-                                 dim=-1)
+      ]
+      attention_mask = torch.cat(tensors, dim=-1)
 
     cur_len = cur_len + 1
 

@@ -13,19 +13,21 @@ import logging
 import datetime
 import torch
 import random
+import types
 
 import numpy as np
 
 from os.path import join
 from tqdm import tqdm
 from torch.distributed import get_rank
-from interact import generate_message
+from interact import generate_messages
 from interact import decode, load, load_dqn
 from config import vocab_path, model_path, reverse_model_path, dqn_model_path
 
 from gpt2_training.train_utils import boolean_string
 
 from data_loader import BucketingDataLoader
+from train_reinforce import generate
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -191,15 +193,22 @@ for batch in eval_dataloader:
   data.append(batch)
 
 N_TEST = 1000
+N_BATCH = 1
 data = random.sample(data, N_TEST)
 
 vocab, model, reverse_model, _ = load(vocab_path, model_path,
                                       reverse_model_path)
 
-dqn = load_dqn(dqn_model_path)
+model.generate = types.MethodType(generate, model)
 
+dqn = None  # load_dqn(dqn_model_path)
+
+inputs = []
 EOS = 1
-for step, batch in enumerate(tqdm(data)):
+for step, batch in enumerate(
+    tqdm(data,
+         bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} '
+         '{elapsed}<{remaining}, {rate_fmt}\n')):
   batch = tuple(t.to(args.device) for t in batch)
   input_ids, *_ = batch
   # input_ids = input_ids[:, :random.sample(
@@ -214,9 +223,15 @@ for step, batch in enumerate(tqdm(data)):
       ids.append([])
       idx += 1
   ids = ids[:-1]
+  inputs.append([torch.tensor([id]) for id in ids])
 
-  message = generate_message([torch.tensor([id]) for id in ids], model,
-                             reverse_model, vocab, dqn, False)
   logger.info(
-      f'{decode(input_ids[0].tolist(), vocab, skip_special_tokens=False)}'
-      f'\t{message}')
+      f'입력: {decode(input_ids[0].tolist(), vocab, skip_special_tokens=False)}')
+
+  if len(inputs) == N_BATCH or step == len(data) - 1:
+    messages = generate_messages(inputs, model, reverse_model, vocab, dqn,
+                                 False)
+    for message in messages:
+      logger.info(f'출력: {message}')
+
+    inputs = []
