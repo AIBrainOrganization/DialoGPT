@@ -10,7 +10,6 @@ import os
 import sys
 import argparse
 import logging
-import time
 import datetime
 import torch
 
@@ -18,28 +17,26 @@ import numpy as np
 
 from os.path import join
 from tqdm import tqdm
-from torch.distributed import get_rank, get_world_size
+from torch.distributed import get_rank
 
-from lsp_model import GPT2LMHeadModel, GPT2Tokenizer, GPT2Config, Adam
-from gpt2_training.train_utils import load_model, boolean_string, set_lr, get_eval_list_same_length
+from gpt2_training.train_utils import boolean_string
 from gpt2_training.eval_utils import eval_model_loss
 
-from data_loader import BucketingDataLoader, DynamicBatchingLoader, DistributedBucketingDataLoader
+from data_loader import BucketingDataLoader
 
-from gpt2_training.distributed import all_reduce_and_rescale_tensors, all_gather_list
-
-from kogpt2.pytorch_kogpt2 import get_pytorch_kogpt2_model
-from kogpt2.pytorch_kogpt2 import kogpt2_config as config
 from gluonnlp.data import SentencepieceTokenizer
 from kogpt2.utils import get_tokenizer
 
-from pytorch_memlab import MemReporter
-
+from kogpt2.pytorch_kogpt2 import get_kogpt2_model
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-    datefmt='%m/%d/%Y %H:%M:%S', level=logging.INFO)
+    datefmt='%m/%d/%Y %H:%M:%S',
+    level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+conf_logger = logging.getLogger('transformers.configuration_utils')
+conf_logger.setLevel(logging.WARNING)
 
 INF = 100000000
 CACHE_EMPTY_STEP = 10000
@@ -50,49 +47,64 @@ EVAL_STEP = 100000
 ##########################################################################
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--model_name_or_path', type=str,
+parser.add_argument('--model_name_or_path',
+                    type=str,
                     help='pretrained model name or path to local checkpoint')
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--max_seq_length", type=int, default=128)
 
-parser.add_argument("--skip_eval", action='store_true',
+parser.add_argument("--skip_eval",
+                    action='store_true',
                     help='If true, skip evaluation.')
 parser.add_argument("--init_checkpoint", type=str)
 parser.add_argument("--train_input_file", type=str)
 parser.add_argument("--eval_input_file", type=str)
 parser.add_argument("--continue_from", type=int, default=0)
 
-parser.add_argument("--train_batch_size", type=int, default=4,
+parser.add_argument("--train_batch_size",
+                    type=int,
+                    default=4,
                     help="batch size now means per GPU per step")
-parser.add_argument("--gradient_accumulation_steps", type=int, default=2,
+parser.add_argument("--gradient_accumulation_steps",
+                    type=int,
+                    default=2,
                     help="to increase effective batch size "
-                         "and reduce synchronization")
+                    "and reduce synchronization")
 parser.add_argument("--eval_batch_size", type=int, default=4)
 parser.add_argument("--learning_rate", type=float, default=1e-5)
-parser.add_argument("--num_optim_steps", type=int, default=1000000,
+parser.add_argument("--num_optim_steps",
+                    type=int,
+                    default=1000000,
                     help="new API specifies num update steps")
-parser.add_argument("--valid_step", type=int, default=10000,
+parser.add_argument("--valid_step",
+                    type=int,
+                    default=10000,
                     help="how many optim steps between validations")
 parser.add_argument("--warmup_proportion", type=float, default=0.1)
 parser.add_argument("--warmup_steps", type=int, default=16000)
 
 parser.add_argument("--normalize_data", type=boolean_string, default=True)
 parser.add_argument("--fp16", type=boolean_string, default=True)
-parser.add_argument("--lr_schedule", type=str,
-                    choices=['noam', 'noamwd', 'BERT', 'None'], default='noam')
+parser.add_argument("--lr_schedule",
+                    type=str,
+                    choices=['noam', 'noamwd', 'BERT', 'None'],
+                    default='noam')
 parser.add_argument("--loss_scale", type=float, default=0)
 parser.add_argument("--no_token_id", type=boolean_string, default=True)
 
 parser.add_argument("--output_dir", type=str)
 parser.add_argument("--log_dir", type=str)
-parser.add_argument('--pbar', type=boolean_string,
-                    default=True, help='turn on progress bar')
+parser.add_argument('--pbar',
+                    type=boolean_string,
+                    default=True,
+                    help='turn on progress bar')
 
 # distributed
-parser.add_argument('--local_rank', type=int, default=-1,
+parser.add_argument('--local_rank',
+                    type=int,
+                    default=-1,
                     help='for torch.distributed')
 parser.add_argument('--config', help='JSON config file')
-
 
 # do normal parsing
 args = parser.parse_args()
@@ -122,13 +134,12 @@ if args.config is not None:
 
 assert args.train_batch_size % args.gradient_accumulation_steps == 0, \
     'batch size % gradient accumulation steps != 0!'
-args.train_batch_size = (args.train_batch_size
-                         // args.gradient_accumulation_steps)
+args.train_batch_size = (args.train_batch_size //
+                         args.gradient_accumulation_steps)
 logger.info('train batch size = {}, '
             'new train batch size (after gradient accumulation) = {}'.format(
                 args.train_batch_size * args.gradient_accumulation_steps,
                 args.train_batch_size))
-
 
 if args.local_rank == -1:
   logger.info('CUDA available? {}'.format(str(torch.cuda.is_available())))
@@ -145,8 +156,9 @@ else:
   n_gpu = torch.distributed.get_world_size()
   args.device, args.n_gpu = device, 1
   logger.info("device: {} n_gpu: {}, distributed training: {}, "
-              "16-bits training: {}".format(
-                  device, n_gpu, bool(args.local_rank != -1), args.fp16))
+              "16-bits training: {}".format(device, n_gpu,
+                                            bool(args.local_rank != -1),
+                                            args.fp16))
 
 np.random.seed(args.seed)
 torch.random.manual_seed(args.seed)
@@ -155,10 +167,10 @@ if n_gpu > 0:
   torch.cuda.manual_seed_all(args.seed)
 
 timestamp = datetime.datetime.now().strftime('%Y-%m-%d%H%M%S')
-output_dir = join(args.output_dir,
-                  'GPT2.{}.{}.{}gpu.{}'.format(args.learning_rate,
-                                               args.train_batch_size, n_gpu,
-                                               timestamp))
+output_dir = join(
+    args.output_dir,
+    'GPT2.{}.{}.{}gpu.{}'.format(args.learning_rate, args.train_batch_size,
+                                 n_gpu, timestamp))
 log_dir = args.log_dir if args.log_dir is not None and len(
     args.log_dir) > 0 else output_dir
 if args.local_rank == -1 or get_rank() == 0:
@@ -169,7 +181,6 @@ args_dict = vars(args)
 for a in args_dict:
   logger.info('%-28s  %s' % (a, args_dict[a]))
 
-
 #########################################################################
 # Prepare Data Set
 ##########################################################################
@@ -177,9 +188,16 @@ for a in args_dict:
 tok_path = get_tokenizer()
 enc = SentencepieceTokenizer(tok_path)
 
-
 VOCAB_PATH = '/home/calee/kogpt2/kogpt2_news_wiki_ko_cased_818bfa919d.spiece'
-from kogpt2.pytorch_kogpt2 import get_kogpt2_model
+
+if args.local_rank == -1 or get_rank() == 0:
+  train_logger = open(join(log_dir, 'train_log.txt'), 'a+', buffering=1)
+  eval_logger = open(join(log_dir, 'eval_log.txt'), 'a+', buffering=1)
+  print(
+      'epoch,global_step,step,mean_loss,mean_ppl,n_token_real,'
+      'n_token_total,epoch_time',
+      file=train_logger)
+  print('epoch,global_step,step,eval_loss,eval_ppl', file=eval_logger)
 
 filenames = os.listdir(args.init_checkpoint)
 filenames = [f for f in filenames if f.endswith('.pkl')]
@@ -197,49 +215,15 @@ for filename in tqdm(filenames):
     logging.info('data parallel because more than one gpu')
     model = torch.nn.DataParallel(model)
 
-  eval_dataloader_loss = BucketingDataLoader(
-      args.eval_input_file, args.eval_batch_size, args.max_seq_length)
-
-  # if args.local_rank != -1:
-  #   # when from scratch make sure initial models are the same
-  #   params = [p.data for p in model.parameters()]
-  #   all_reduce_and_rescale_tensors(
-  #       params, float(torch.distributed.get_world_size()))
-  #
-  # model_parameters = filter(lambda p: p.requires_grad, model.parameters())
-  # total_params = sum([np.prod(p.size()) for p in model_parameters])
-  # logger.info('Number of parameter = {}'.format(total_params))
-  #
-  # param_optimizer = list(model.named_parameters())
-  # no_decay = ['bias', 'ln']   # no decay for bias and LayerNorm (ln)
-  # optimizer_grouped_parameters = [
-  #     {'params': [p for n, p in param_optimizer
-  #                 if not any(nd in n for nd in no_decay)],
-  #      'weight_decay': 0.01},
-  #     {'params': [p for n, p in param_optimizer
-  #                 if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
-  # ]
-
-  #########################################################################
-  # Training !
-  ##########################################################################
-
-  epoch = 0
-  step = 0
-  if args.local_rank == -1 or get_rank() == 0:
-    train_logger = open(join(log_dir, 'train_log.txt'), 'a+', buffering=1)
-    eval_logger = open(join(log_dir, 'eval_log.txt'), 'a+', buffering=1)
-    print('epoch,global_step,step,mean_loss,mean_ppl,n_token_real,'
-          'n_token_total,epoch_time', file=train_logger)
-    print('epoch,global_step,step,eval_loss,eval_ppl', file=eval_logger)
+  eval_dataloader_loss = BucketingDataLoader(args.eval_input_file,
+                                             args.eval_batch_size,
+                                             args.max_seq_length)
 
   if args.local_rank == -1 or get_rank() == 0:
-    eval_loss, eval_ppl = eval_model_loss(
-        model, enc, eval_dataloader_loss, epoch, args)
-    print('{},{},{},{},{}'.format(
-        epoch + 1, global_step + 1, step + 1, eval_loss, eval_ppl),
-        file=eval_logger)
+    eval_loss, eval_ppl = eval_model_loss(model, enc, eval_dataloader_loss,
+                                          args)
+    print(f'{global_step + 1},{eval_loss},{eval_ppl}', file=eval_logger)
 
-  if args.local_rank == -1 or get_rank() == 0:
-    train_logger.close()
-    eval_logger.close()
+if args.local_rank == -1 or get_rank() == 0:
+  train_logger.close()
+  eval_logger.close()

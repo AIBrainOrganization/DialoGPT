@@ -17,8 +17,7 @@ def cal_BLEU_4(generated, reference, is_corpus=False):
     if is_corpus:
       score, scores = Bleu(4).compute_score(reference, {0: [g]})
     else:
-      score, scores = Bleu(4).compute_score({0: [reference[0][idx]]},
-                                            {0: [g]})
+      score, scores = Bleu(4).compute_score({0: [reference[0][idx]]}, {0: [g]})
     for i, s in zip([0, 1, 2, 3], score):
       BLEUscore[i] += s
   BLEUscore[0] = BLEUscore[0] / len(generated)
@@ -31,8 +30,12 @@ def cal_BLEU_4(generated, reference, is_corpus=False):
 def cal_entropy(generated):
   etp_score = [0.0, 0.0, 0.0, 0.0]
   div_score = [0.0, 0.0, 0.0, 0.0]
-  counter = [defaultdict(int), defaultdict(int),
-             defaultdict(int), defaultdict(int)]
+  counter = [
+      defaultdict(int),
+      defaultdict(int),
+      defaultdict(int),
+      defaultdict(int)
+  ]
   for gg in generated:
     g = gg.rstrip().split()
     for n in range(4):
@@ -42,12 +45,12 @@ def cal_entropy(generated):
   for n in range(4):
     total = sum(counter[n].values()) + 1e-10
     for v in counter[n].values():
-      etp_score[n] += - (v + 0.0) / total * (np.log(v + 0.0) - np.log(total))
+      etp_score[n] += -(v + 0.0) / total * (np.log(v + 0.0) - np.log(total))
     div_score[n] = (len(counter[n].values()) + 0.0) / total
   return etp_score, div_score
 
 
-def eval_model_loss(model, tokenizer, eval_dataloader, epoch_id, args):
+def eval_model_loss(model, tokenizer, eval_dataloader, args):
   # use the same signature with eval_model_generation
   logger.info('compute eval model loss, using eval mode, '
               'please change it back to train after calling this function')
@@ -62,10 +65,14 @@ def eval_model_loss(model, tokenizer, eval_dataloader, epoch_id, args):
       if args.no_token_id:
         token_ids = None
       n_sample = input_ids.shape[0]
-      loss, ppl, _ = model(input_ids, position_ids=position_ids,
-                           token_type_ids=token_ids, labels=label_ids)
+      loss, ppl, _ = model(input_ids,
+                           position_ids=position_ids,
+                           token_type_ids=token_ids,
+                           labels=label_ids)
       tot_loss.append(loss.mean().item() * n_sample)
       tot_ppl.append(ppl.mean().item() * n_sample)
       tot_sample.append(n_sample)
-  print(f"\n Epoch {epoch_id}: Val loss {np.sum(tot_loss) / np.sum(tot_sample)} Val ppl {np.sum(tot_ppl) / np.sum(tot_sample)} ")
-  return np.sum(tot_loss) / np.sum(tot_sample), np.sum(tot_ppl) / np.sum(tot_sample)
+  print(f'\n Val loss {np.sum(tot_loss) / np.sum(tot_sample)} '
+        f'Val ppl {np.sum(tot_ppl) / np.sum(tot_sample)} ')
+  return np.sum(tot_loss) / np.sum(tot_sample), np.sum(tot_ppl) / np.sum(
+      tot_sample)
