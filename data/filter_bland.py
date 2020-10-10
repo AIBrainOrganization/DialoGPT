@@ -3,15 +3,17 @@ from tqdm import tqdm
 import pandas as pd
 
 import json
+import argparse
+import os
+import re
 
-import sys
-sys.path.append('/home/calee/git/dcinside')
-from filter import text_to_words
-from filter import Comment
-from filter import filter_rows
+from dcinside.filter import text_to_words
+from dcinside.filter import Comment
+from dcinside.filter import filter_rows
 
 TRIGRAMS_PATH = 'trigrams'
 FILE_PATHS = ['train_bland.tsv', 'valid_bland.tsv', 'test_bland.tsv']
+SPLIT_PATTERN = re.compile(r' EOS (?=[01]\.0)')
 
 
 def get_trigrams(s):
@@ -19,20 +21,25 @@ def get_trigrams(s):
   return [s[i:i + 3] for i in range(len(s) - 2)]
 
 
-def read_or_create_trigrams():
+def split(source):
+  return SPLIT_PATTERN.split(source)
+
+
+def read_or_create_trigrams(path):
   try:
-    with open(TRIGRAMS_PATH) as f:
-      trigrams = json.loads(f.read())
+    with open(os.path.join(path, TRIGRAMS_PATH)) as f:
+      trigrams = json.load(f)
   except IOError:
     trigrams = {}
     for file in FILE_PATHS:
-      df = pd.read_csv(file, sep='\t', header=None)
-      for _, line in tqdm(df.iterrows()):
+      df = pd.read_csv(os.path.join(path, file), sep='\t', header=None)
+      for _, line in tqdm(df.iterrows(), total=len(df.index), desc='create trigrams'):
         source, target = line
-        source = source.split(' EOS ')
+        source = split(source)
         sentences = source
         sentences.append(target)
         sentences = [s[4:] for s in sentences if int(s[0])]
+
         sentences = [[' '.join(t) for t in get_trigrams(s)] for s in sentences]
 
         for s in sentences:
@@ -42,7 +49,7 @@ def read_or_create_trigrams():
             else:
               trigrams[t] = 1
 
-    with open(TRIGRAMS_PATH, 'w') as f:
+    with open(os.path.join(path, TRIGRAMS_PATH), 'w') as f:
       f.write(json.dumps(trigrams))
 
   s = sorted(trigrams.items(), key=lambda k: -k[1])
@@ -69,14 +76,14 @@ def check_bland(s, trigrams):
     return False
 
 
-def create_rows(trigrams):
+def create_rows(trigrams, path):
   ret = []
   for file in FILE_PATHS:
     rows = []
-    df = pd.read_csv(file, sep='\t', header=None)
-    for _, line in tqdm(df.iterrows()):
+    df = pd.read_csv(os.path.join(path, file), sep='\t', header=None)
+    for _, line in tqdm(df.iterrows(), total=len(df.index), desc='create rows'):
       source, target = line
-      sentences = source.split(' EOS ')
+      sentences = split(source)
       sentences.append(target)
 
       sentences = [Comment(s[4:], [] if int(s[0]) else ['bad'])
@@ -94,14 +101,19 @@ def create_rows(trigrams):
 
 
 def main():
-  trigrams = read_or_create_trigrams()
-  rowss = create_rows(trigrams)
+  parser = argparse.ArgumentParser(description='Filter bland phrases.')
+  parser.add_argument('path', metavar='path', type=str, help='Directory path')
+
+  args = parser.parse_args()
+
+  trigrams = read_or_create_trigrams(args.path)
+  rowss = create_rows(trigrams, args.path)
   filtered = [filter_rows(r) for r in rowss]
 
   df = [pd.DataFrame(f) for f in filtered]
   names = ['train.tsv', 'valid.tsv', 'test.tsv']
   for i, d in enumerate(df):
-    d.to_csv(names[i], sep='\t', header=False, index=False)
+    d.to_csv(os.path.join(args.path, names[i]), sep='\t', header=False, index=False)
 
 
 if __name__ == '__main__':
