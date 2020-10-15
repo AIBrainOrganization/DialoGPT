@@ -13,6 +13,7 @@ import logging
 import time
 import datetime
 import torch
+import random
 
 import numpy as np
 
@@ -44,6 +45,15 @@ logger = logging.getLogger(__name__)
 INF = 100000000
 CACHE_EMPTY_STEP = 10000
 EVAL_STEP = 100000
+
+random_seed = 77
+torch.manual_seed(random_seed)
+torch.cuda.manual_seed(random_seed)
+torch.cuda.manual_seed_all(random_seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+np.random.seed(random_seed)
+random.seed(random_seed)
 
 #########################################################################
 # Prepare Parser
@@ -178,7 +188,7 @@ tok_path = get_tokenizer()
 enc = SentencepieceTokenizer(tok_path)
 
 
-VOCAB_PATH = '/home/calee/kogpt2/kogpt2_news_wiki_ko_cased_818bfa919d.spiece'
+VOCAB_PATH = '/data/kogpt2_news_wiki_ko_cased_818bfa919d.spiece'
 from kogpt2.pytorch_kogpt2 import get_kogpt2_model
 
 filenames = os.listdir(args.init_checkpoint)

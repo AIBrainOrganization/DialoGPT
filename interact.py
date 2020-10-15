@@ -26,9 +26,9 @@ def load(vocab_path, model_path, reverse_path):
   model, vocab = get_kogpt2_model(model_path, vocab_path, 0)
 
   if device_f == 'cuda':
-    model.half()
-  model.to(device_f)
-  model.eval()
+      model.half()
+      model.to(device_f)
+      model.eval()
 
   # 리버스 모델을 불러옵니다.
   reverse_model, _ = get_kogpt2_model(reverse_path, vocab_path, 0)
@@ -40,11 +40,11 @@ def load(vocab_path, model_path, reverse_path):
   end_token = torch.tensor([[vocab[vocab.eos_token]]], dtype=torch.long)
 
   return vocab, model, reverse_model, end_token
-
+  
 
 # 각 답변의 점수를 계산합니다.
-def _score_response(input, input_reversed, output, model, reverse_model):
-  # input, label, mask를 준비합니다.
+def _score_response(input, input_reversed, output, model, reverse_model): 
+  #input, label, mask를 준비합니다.
   output_reversed = output.to(device_r)
   inputs = torch.cat((input, output[:, :-1]), dim=1)
   inputs_reversed = torch.cat((output_reversed, input_reversed[:, :-1]), dim=1)
@@ -59,7 +59,7 @@ def _score_response(input, input_reversed, output, model, reverse_model):
   reverse_loss, *_ = reverse_model(inputs_reversed, labels=labels_reversed)
 
   # ALPHA 값으로 비중을 주고 loss를 점수로 변경하기 위해 -1을 곱해줍니다.
-  return -(ALPHA * loss.float() + (1 - ALPHA) * reverse_loss.float())
+  return -(ALPHA * loss.float() + (1 - ALPHA) * loss.float()) #reverse_loss.float())
 
 
 # 히스토리에 새 문장을 추가해줍니다.

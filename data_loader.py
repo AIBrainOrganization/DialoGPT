@@ -7,6 +7,8 @@ import random
 import shelve
 import torch
 
+import numpy as np
+
 import subprocess as sp
 
 from math import ceil
@@ -17,6 +19,14 @@ from env import END_OF_TEXT_TOKEN
 from gpt2_training.train_utils import (InputFeatures, InputFeatures_train,
                                        RedditExample)
 
+random_seed = 77
+torch.manual_seed(random_seed)
+torch.cuda.manual_seed(random_seed)
+torch.cuda.manual_seed_all(random_seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+np.random.seed(random_seed)
+random.seed(random_seed)
 
 class BucketSampler(Sampler):
   """
@@ -75,6 +85,7 @@ class GPT2FeatureDataset(Dataset):
       feat_dict['token_type_ids'] = feat_dict['token_type_ids'][
           -self.max_len:]
       feat_dict['lm_labels'] = feat_dict['lm_labels'][-self.max_len:]
+      feat_dict['emotion_ids'] = feat_dict['emotion_ids'][-self.max_len:]  # 추가
     try:
       for s in ['context_len', 'response_len']:
         if s in feat_dict.keys():
@@ -106,7 +117,14 @@ class GPT2FeatureDataset(Dataset):
     labels = pad_sequence([torch.tensor(f.lm_labels, dtype=torch.long)
                            for f in features],
                           batch_first=True, padding_value=-1)
-    return (input_ids, position_ids, token_type_ids, labels)
+    if features[0].emotion_ids is None:  # emotion_ids가 없는 데이터셋 대응
+      return (input_ids, position_ids, token_type_ids, labels)
+
+    # emotion_ids가 있다면 다음부분 실행 후 반환
+    emotion_ids = pad_sequence([torch.tensor(f.emotion_ids, dtype=torch.long)  # 수정, pad_sequence를 사용해도 형태 유지
+                                for f in features],
+                               batch_first=True, padding_value=0)
+    return (input_ids, position_ids, token_type_ids, labels, emotion_ids)
 
 
 class BucketingDataLoader(object):

@@ -58,11 +58,27 @@ def eval_model_loss(model, tokenizer, eval_dataloader, epoch_id, args):
   with torch.no_grad():
     for step, batch in enumerate(eval_dataloader):
       batch = tuple(t.to(args.device) for t in batch)
-      input_ids, position_ids, token_ids, label_ids, *_ = batch
+      #input_ids, position_ids, token_ids, label_ids, *_ = batch
+      input_ids, position_ids, token_ids, label_ids, emotion_ids = batch
+
+      emotion_ids -= 6
+      def emotion_ids_custom_replace(tensor, padding_idx):
+          # we create a copy of the original tensor, 
+          # because of the way we are replacing them.
+          re = tensor.clone()
+          re[tensor==-6] = padding_idx
+          return re
+
+      emotion_ids = emotion_ids_custom_replace(emotion_ids, 0)
+
       if args.no_token_id:
         token_ids = None
       n_sample = input_ids.shape[0]
-      loss, ppl = model(input_ids, position_ids=position_ids,
+      print("n_sample: ", n_sample)
+      print("emotion_ids: ", emotion_ids)
+      print("positin_ids: ", position_ids)
+      print("input_ids: ", input_ids)
+      loss, ppl = model(input_ids, position_ids=position_ids,emotion_ids=emotion_ids,
                         token_type_ids=token_ids, labels=label_ids)
       tot_loss.append(loss.mean().item() * n_sample)
       tot_ppl.append(ppl.mean().item() * n_sample)

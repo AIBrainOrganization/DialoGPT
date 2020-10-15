@@ -1,5 +1,7 @@
 #  Copyright (c) Microsoft Corporation.
 #  Licensed under the MIT license.
+
+#%%
 '''
  * @Desc: train GPT2 from scratch/ fine tuning.
           Modified based on Huggingface GPT-2 implementation
@@ -14,6 +16,7 @@ import time
 import tqdm
 import datetime
 import torch
+import random
 
 import numpy as np
 
@@ -45,6 +48,15 @@ INF = 100000000
 CACHE_EMPTY_STEP = 10000
 EVAL_STEP = 100000
 
+random_seed = 77
+torch.manual_seed(random_seed)
+torch.cuda.manual_seed(random_seed)
+torch.cuda.manual_seed_all(random_seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+np.random.seed(random_seed)
+random.seed(random_seed)
+
 #########################################################################
 # Prepare Parser
 ##########################################################################
@@ -59,6 +71,8 @@ parser.add_argument("--skip_eval", action='store_true',
                     help='If true, skip evaluation.')
 parser.add_argument("--init_checkpoint", type=str)
 parser.add_argument("--train_input_file", type=str)
+
+
 parser.add_argument("--eval_input_file", type=str)
 parser.add_argument("--continue_from", type=int, default=0)
 
@@ -179,7 +193,7 @@ enc = SentencepieceTokenizer(tok_path)
 if args.init_checkpoint is None:
   model, vocab = get_pytorch_kogpt2_model(0)
 else:
-  VOCAB_PATH = '/home/calee/kogpt2/kogpt2_news_wiki_ko_cased_818bfa919d.spiece'
+  VOCAB_PATH = '/data/kogpt2_news_wiki_ko_cased_818bfa919d.spiece'
   model_path = args.init_checkpoint
   from kogpt2.pytorch_kogpt2 import get_kogpt2_model
   model, vocab = get_kogpt2_model(model_path, VOCAB_PATH, 0)
@@ -215,7 +229,7 @@ eval_dataloader_loss = BucketingDataLoader(
 #########################################################################
 # Prepare Model and Optimizer
 ##########################################################################
-# model = load_model(GPT2LMHeadModel(config), args.init_checkpoint,
+#model = load_model(GPT2LMHeadModel(config), args.init_checkpoint,
 #                    args, verbose=True)
 if args.local_rank != -1:
   # when from scratch make sure initial models are the same
@@ -308,10 +322,21 @@ while True:
     # activate new training mode
     seq_len = batch[0].shape[1]
     batch = tuple(t.to(device) for t in batch)
-    input_ids, position_ids, token_ids, label_ids, *_ = batch
+    input_ids, position_ids, token_ids, label_ids, emotion_ids = batch
+    emotion_ids -= 6
+    def emotion_ids_custom_replace(tensor, padding_idx):
+        # we create a copy of the original tensor, 
+        # because of the way we are replacing them.
+        re = tensor.clone()
+        re[tensor==-6] = padding_idx
+        return re
+
+    emotion_ids = emotion_ids_custom_replace(emotion_ids, 0)
+    #print(emotion_ids)
+
     if args.no_token_id:
       token_ids = None
-    loss, ppl = model(input_ids, position_ids=position_ids,
+    loss, ppl = model(input_ids, position_ids=position_ids,emotion_ids=emotion_ids,
                       token_type_ids=token_ids, labels=label_ids)
     # loss, ppl = model(input_ids, labels=label_ids)
 
@@ -422,3 +447,9 @@ if args.local_rank == -1 or get_rank() == 0:
     pbar.close()
   train_logger.close()
   eval_logger.close()
+
+
+# %%
+
+
+# %%

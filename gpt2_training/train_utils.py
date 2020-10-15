@@ -80,13 +80,14 @@ class InputFeatures(object):
 
 class InputFeatures_train(object):
     def __init__(self, conv_id, input_ids, position_ids, token_type_ids,
-                 lm_labels, weights, input_len=None):
+                 lm_labels, weights, emotion_ids=None, input_len=None):  # emotion_ids 추가
         self.conv_id = conv_id
         self.input_ids = input_ids
         self.position_ids = position_ids
         self.token_type_ids = token_type_ids
         self.lm_labels = lm_labels
         self.weights = weights
+        self.emotion_ids = emotion_ids # emotion_ids 추가
         if input_len is None:
             self.input_len = len(input_ids)
         else:
