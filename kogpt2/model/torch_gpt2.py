@@ -31,9 +31,9 @@ import numpy as np
 #from transformers.configuration_gpt2 import GPT2Config
 from .transformerspe.configuration_gpt2 import GPT2Config
 from .transformerspe.embeddingp import EmbeddingPosition, EmbeddingEmotion
+from .transformerspe.embeddingpe import EmbeddingPositionSinCos, EmbeddingEmotion_repeat
 from .transformerspe.file_utils import add_start_docstrings
 from .transformerspe.modeling_utils import Conv1D, PreTrainedModel, SequenceSummary, prune_conv1d_layer
-
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +190,7 @@ class Attention(nn.Module):
     w_size = w.shape[-1]
     pos_attn = pos_attn[:, :, :w_size, :w_size]
     pos_attn = pos_attn * pos_beta
-    w = w + pos_attn.to(w.dtype)
+    w = w + pos_attn
     
     nd, ns = w.size(-2), w.size(-1)
     b = self.bias[:, :, ns - nd: ns, :ns]
@@ -425,7 +425,7 @@ class GPT2Model(GPT2PreTrainedModel):
 
     self.wte = nn.Embedding(config.vocab_size, config.n_embd)
     self.wpe = nn.Embedding(config.n_position_dim, config.n_embd)
-    self.wee = EmbeddingEmotion(config.n_emotions, config.n_emotion_dim)
+    self.wee = EmbeddingEmotion_repeat(config.n_emotions, config.n_emotion_dim)
 
     self.drop = nn.Dropout(config.embd_pdrop)
     self.h = nn.ModuleList([Block(config.n_ctx, config, scale=True)
@@ -537,13 +537,17 @@ class GPT2Model(GPT2PreTrainedModel):
     if inputs_embeds is None:
       inputs_embeds = self.wte(input_ids)
     position_embeds = self.wpe(position_ids)
+    #print("position_embeds.shape: ",position_embeds.shape)
     emotion_embeds = self.wee(emotion_ids)
     if token_type_ids is not None:
       token_type_embeds = self.wte(token_type_ids)
     else:
       token_type_embeds = 0
   
-    inputs_embeds = inputs_embeds + position_embeds
+    #print(inputs_embeds.shape, position_embeds.shape)
+    #print("position_embeds: ", position_embeds)
+    #position_beta = 1.4
+    #inputs_embeds = inputs_embeds + (position_embeds * position_beta)
     hidden_states = torch.cat((inputs_embeds, emotion_embeds), 2)
     #print("hidden states: ", hidden_states.shape)
     hidden_states = self.drop(hidden_states)
@@ -661,35 +665,7 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
     if "past" in kwargs and kwargs["past"]:
       input_ids = input_ids[:, -1].unsqueeze(-1)
 
-    document = []
-    for row in input_ids:
-      sentences = []
-      indexes = (row == 1).nonzero(as_tuple=False)
-      prev_index = 0
-      for index in indexes:
-        index = index.item()
-        sentences.append(row[prev_index:index + 1])
-        prev_index = index + 1
-
-      document.append(sentences)
-
-    emotion_ids = []
-    for sentences in document:
-      emotions = []
-      for i, s in enumerate(sentences):
-        if i == 0:
-          e_len = s.shape[0] - 1
-        elif i == len(sentences) - 1:
-          e_len = s.shape[0] + 1
-        else:
-          e_len = s.shape[0]
-        emotions += [s[-2].item() - 6] * e_len
-      emotions += [0] * (input_ids.shape[1] - len(emotions))
-      emotion_ids.append(emotions)
-
-    emotion_ids = torch.tensor(emotion_ids, dtype=torch.long)
-
-    inputs = {'input_ids': input_ids, 'emotion_ids': emotion_ids}
+    inputs = {"input_ids": input_ids}
     inputs.update(kwargs)
     return inputs
 

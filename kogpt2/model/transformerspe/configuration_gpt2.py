@@ -117,7 +117,7 @@ class GPT2Config(PretrainedConfig):
     def __init__(
         self,
         vocab_size=50257,
-        n_positions=1024,
+        n_positions=128,
         n_ctx=896,
         n_embd=768,
         n_layer=12,
@@ -175,7 +175,7 @@ class GPT2Config(PretrainedConfig):
         self.n_emotions = n_emotions
         self.n_positions_k = n_positions_k
 
-        self.pos_type = pos_type
+        self.pos_type = 'imp4'
         self.pos_sigma = pos_sigma
         self.pos_beta = pos_beta
         self.tied_qk = tied_qk
