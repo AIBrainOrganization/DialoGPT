@@ -484,3 +484,5 @@ reddit_extractor/data/reddit/
 reddit_extractor/lists/files/
 config.py
 data
+
+*.sw*
