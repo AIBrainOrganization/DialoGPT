@@ -190,7 +190,7 @@ class Attention(nn.Module):
     w_size = w.shape[-1]
     pos_attn = pos_attn[:, :, :w_size, :w_size]
     pos_attn = pos_attn * pos_beta
-    w = w + pos_attn
+    w = w + pos_attn.to(w.dtype)
     
     nd, ns = w.size(-2), w.size(-1)
     b = self.bias[:, :, ns - nd: ns, :ns]
@@ -661,7 +661,35 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
     if "past" in kwargs and kwargs["past"]:
       input_ids = input_ids[:, -1].unsqueeze(-1)
 
-    inputs = {"input_ids": input_ids}
+    document = []
+    for row in input_ids:
+      sentences = []
+      indexes = (row == 1).nonzero(as_tuple=False)
+      prev_index = 0
+      for index in indexes:
+        index = index.item()
+        sentences.append(row[prev_index:index + 1])
+        prev_index = index + 1
+
+      document.append(sentences)
+
+    emotion_ids = []
+    for sentences in document:
+      emotions = []
+      for i, s in enumerate(sentences):
+        if i == 0:
+          e_len = s.shape[0] - 1
+        elif i == len(sentences) - 1:
+          e_len = s.shape[0] + 1
+        else:
+          e_len = s.shape[0]
+        emotions += [s[-2].item() - 6] * e_len
+      emotions += [0] * (input_ids.shape[1] - len(emotions))
+      emotion_ids.append(emotions)
+
+    emotion_ids = torch.tensor(emotion_ids, dtype=torch.long)
+
+    inputs = {'input_ids': input_ids, 'emotion_ids': emotion_ids}
     inputs.update(kwargs)
     return inputs
 

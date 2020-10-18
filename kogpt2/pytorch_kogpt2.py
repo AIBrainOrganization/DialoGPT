@@ -16,19 +16,14 @@
 import hashlib
 import os
 import sys
-import random
 
 import gluonnlp as nlp
 import requests
 import torch
 
-import numpy as np
-
 from .model.torch_gpt2 import GPT2Config, GPT2LMHeadModel
 from .utils import download as _download
 from .utils import tokenizer
-from .tune import load_pretrained_model
-#from .tune_simple import load_pretrained_model
 
 pytorch_kogpt2 = {
     'url':
@@ -44,35 +39,31 @@ kogpt2_config = {
     "n_embd": 768,
     "n_head": 14,
     "n_layer": 12,
-    "n_positions": 128,
+    "n_positions": 1024,
     "vocab_size": 50000,
     'embd_pdrop': 0.1,
     'attn_pdrop': 0.1,
-    'resid_pdrop': 0.1
+    'resid_pdrop': 0.1,
+    'output_past' : False  # model test를 위한 임시 변수 추가
+
 }
 
-random_seed = 77
-torch.manual_seed(random_seed)
-torch.cuda.manual_seed(random_seed)
-torch.cuda.manual_seed_all(random_seed)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-np.random.seed(random_seed)
-random.seed(random_seed)
 
 def get_pytorch_kogpt2_model(ctx='cpu', cachedir='~/kogpt2/'):
   # download model
-  model_info = pytorch_kogpt2
-  model_path = _download(model_info['url'],
-                         model_info['fname'],
-                         model_info['chksum'],
-                         cachedir=cachedir)
-  # download vocab
-  vocab_info = tokenizer
-  vocab_path = _download(vocab_info['url'],
-                         vocab_info['fname'],
-                         vocab_info['chksum'],
-                         cachedir=cachedir)
+  model_path = None
+  vocab_path = None
+#  model_info = pytorch_kogpt2
+#  model_path = _download(model_info['url'],
+#                         model_info['fname'],
+#                         model_info['chksum'],
+#                         cachedir=cachedir)
+#  # download vocab
+#  vocab_info = tokenizer
+#  vocab_path = _download(vocab_info['url'],
+#                         vocab_info['fname'],
+#                         vocab_info['chksum'],
+#                         cachedir=cachedir)
   return get_kogpt2_model(model_path, vocab_path, ctx)
 
 
@@ -89,31 +80,36 @@ def remove_module(d):
 
 def get_kogpt2_model(model_file, vocab_file, ctx="cpu"):
   kogpt2model = GPT2LMHeadModel(config=GPT2Config.from_dict(kogpt2_config))
-  #d = torch.load(model_file)
-  #d = remove_module(d)
-  #d = load_pretrained_model(d)
-  #print("d's state_dict: ")
-  #for param_tensor in d.state_dict():
-  #print(param_tensor, "\t", d.state_dict()[param_tensor].size())
-  
-  #print(kogpt2model.state_dict())
-  #print("model's state_dict: ")
-  for param_tensor in kogpt2model.state_dict():
-    print(param_tensor, "\t", kogpt2model.state_dict()[param_tensor].size())
-  
-  # kogpt2model.load_state_dict(d, strict=False)
-  #model_file = '/data/pytorch_kogpt2_676e9bcfa7.params'
-  #d_load = load_pretrained_model(kogpt2model, model_file)
-  #kogpt2model.load_state_dict(d, strict=False)
+  if model_file is not None:
+    d = torch.load(model_file)
+    d = remove_module(d)
+    kogpt2model.load_state_dict(d)
   device = torch.device(ctx)
   kogpt2model.to(device)
   kogpt2model.eval()
-  vocab_b_obj = nlp.vocab.BERTVocab.from_sentencepiece(vocab_file,
-                                                       mask_token=None,
-                                                       sep_token=None,
-                                                       cls_token=None,
-                                                       unknown_token='<unk>',
-                                                       padding_token='<pad>',
-                                                       bos_token='<s>',
-                                                       eos_token='</s>')
+  vocab_b_obj = None
+  if vocab_file is not None:
+    vocab_b_obj = nlp.vocab.BERTVocab.from_sentencepiece(vocab_file,
+                                                         mask_token=None,
+                                                         sep_token=None,
+                                                         cls_token=None,
+                                                         unknown_token='<unk>',
+                                                         padding_token='<pad>',
+                                                         bos_token='<s>',
+                                                         eos_token='</s>')
+    # 감정 토큰 추가
+    emotion_list = ['neutral', 'happiness', 'surprise', 'disgust', 'angry', 'fear', 'sadness'] # unused 6 ~ 12와 같음
+  
+    # '<neutral>' : 6
+    # '<happiness>' : 7
+    # '<surprise>' : 8
+    # '<disgust>' : 9
+    # '<angry>' : 10
+    # '<fear>' : 11
+    # '<sadness>' : 12
+  
+    for i, emo in enumerate(emotion_list):
+      vocab_b_obj.token_to_idx['<{}>'.format(emo)] = vocab_b_obj.token_to_idx["<unused{}>".format(i)]
+      del vocab_b_obj.token_to_idx["<unused{}>".format(i)]
+      vocab_b_obj.idx_to_token[i+6] = '<{}>'.format(emo)  # idx -> token list 수정
   return kogpt2model, vocab_b_obj

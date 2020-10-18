@@ -244,7 +244,6 @@ class EmbeddingPosition(Module):
 
 def embeddingemotion(input, weight, padding_idx=None, max_norm=None, norm_type=2.,
               scale_grad_by_freq=False, sparse=False):
-
     if padding_idx is not None:
         if padding_idx > 0:
             assert padding_idx < weight.size(0), 'Padding_idx must be within num_embeddings'
@@ -263,7 +262,7 @@ def embeddingemotion(input, weight, padding_idx=None, max_norm=None, norm_type=2
         emotion_table[i, -len(row):] = torch.tensor(row)[:n_emotion_dim]
     '''
     emotion_table = vad_fill_128
-    emotion_table = emotion_table.cuda()
+    emotion_table = emotion_table.cuda().to(weight.dtype)
     return emotion_table[input, :]
 
 
