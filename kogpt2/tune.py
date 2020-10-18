@@ -3,7 +3,6 @@ import numpy as np
 import random
 from scipy.io.wavfile import read
 import torch
-import pandas as pd
 import torch.nn.functional as F
 from os import listdir
 from os.path import isfile, join

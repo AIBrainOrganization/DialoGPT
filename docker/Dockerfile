@@ -1,5 +1,6 @@
 FROM nvidia/cuda:10.1-base
 WORKDIR /git/DialoGPT
+RUN rm -rf /var/lib/apt/lists/*
 RUN apt update
 RUN apt install -y wget
 RUN apt install -y gcc
@@ -8,8 +9,8 @@ RUN bash Anaconda3-2020.02-Linux-x86_64.sh -b -p ~/anaconda3
 SHELL ["/bin/bash", "--login", "-c"]
 RUN sed -i '1 i\. ~/anaconda3/etc/profile.d/conda.sh' ~/.bashrc
 RUN echo ~/.bashrc
-COPY DialoGPT/LSP-linux.yml /root/LSP-linux.yml
-COPY KoGPT2/requirements.txt /root/requirements.txt
+COPY LSP-linux.yml /root/LSP-linux.yml
+COPY requirements.txt /root/requirements.txt
 RUN conda env create -f /root/LSP-linux.yml -n LSP
 RUN conda run -n LSP pip install -r /root/requirements.txt
 RUN conda run -n LSP pip install flask
