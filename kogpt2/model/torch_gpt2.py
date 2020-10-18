@@ -187,10 +187,9 @@ class Attention(nn.Module):
     pos_beta = 10
 
     
-    w_size = w.shape[-1]
-    pos_attn = pos_attn[:, :, :w_size, :w_size]
+    pos_attn = pos_attn[:, :, :w.shape[-2], :w.shape[-1]]
     pos_attn = pos_attn * pos_beta
-    w = w + pos_attn
+    w = w + pos_attn.to(w.dtype)
     
     nd, ns = w.size(-2), w.size(-1)
     b = self.bias[:, :, ns - nd: ns, :ns]
@@ -458,7 +457,6 @@ class GPT2Model(GPT2PreTrainedModel):
       head_mask=None,
       inputs_embeds=None,
   ):
-
     if input_ids is not None and inputs_embeds is not None:
       raise ValueError(
           "You cannot specify both input_ids and inputs_embeds at the same time")
@@ -477,9 +475,9 @@ class GPT2Model(GPT2PreTrainedModel):
     if position_ids is not None:
       position_ids = position_ids.view(-1, input_shape[-1])
       batch_size = position_ids.shape[0] # 추가해야 할 수도 있음
-    if emotion_ids is not None:
+    #if emotion_ids is not None:
       #print("torch_gpt2: ", emotion_ids)
-      emotion_ids = emotion_ids.view(-1, input_shape[-1])
+      #emotion_ids = emotion_ids.view(-1, input_shape[-1])
 
     if past is None:
       past_length = 0
@@ -494,7 +492,7 @@ class GPT2Model(GPT2PreTrainedModel):
     
     if emotion_ids is None:
       device = input_ids.device if input_ids is not None else inputs_embeds.device
-      emotion_ids = emotion_ids.unsqueeze(0).view(-1, input_shape[-1])
+      # emotion_ids = emotion_ids.unsqueeze(0).view(-1, input_shape[-1])
 
     # Attention mask.
     if attention_mask is not None:
@@ -663,7 +661,8 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
   def prepare_inputs_for_generation(self, input_ids, **kwargs):
     # only last token for inputs_ids if past is defined in kwargs
     if "past" in kwargs and kwargs["past"]:
-      input_ids = input_ids[:, -1].unsqueeze(-1)
+      input_ids = input_ids[:, -1:]
+      kwargs['emotion_ids'] = kwargs['emotion_ids'][:, -1:]
 
     inputs = {"input_ids": input_ids}
     inputs.update(kwargs)

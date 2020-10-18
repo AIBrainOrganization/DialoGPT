@@ -588,6 +588,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
     def generate(
         self,
         input_ids=None,
+        emotion_ids=None,
         max_length=None,
         do_sample=True,
         num_beams=None,
@@ -763,6 +764,10 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
                 batch_size * num_return_sequences, cur_len
             )  # (batch_size * num_return_sequences, cur_len)
             effective_batch_size = batch_size * num_return_sequences
+            emotion_ids = emotion_ids.unsqueeze(1).expand(
+                batch_size, num_return_sequences, cur_len)
+            emotion_ids = emotion_ids.contiguous().view(
+                batch_size * num_return_sequences, cur_len)
         else:
             effective_batch_size = batch_size
 
@@ -786,6 +791,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
         else:
             output = self._generate_no_beam_search(
                 input_ids,
+                emotion_ids,
                 cur_len,
                 max_length,
                 do_sample,
@@ -803,6 +809,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
     def _generate_no_beam_search(
         self,
         input_ids,
+        emotion_ids,
         cur_len,
         max_length,
         do_sample,
@@ -822,9 +829,10 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
         sent_lengths = input_ids.new(batch_size).fill_(max_length)
 
         past = None
-
+        
         while cur_len < max_length:
-            model_inputs = self.prepare_inputs_for_generation(input_ids, past=past)
+            model_inputs = self.prepare_inputs_for_generation(
+                input_ids, past=past, emotion_ids=emotion_ids)
             outputs = self(**model_inputs)
             next_token_logits = outputs[0][:, -1, :]
 
@@ -862,6 +870,11 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin):
                 tokens_to_add = next_token
 
             input_ids = torch.cat([input_ids, tokens_to_add.unsqueeze(-1)], dim=-1)
+            emotion_pad = torch.tensor(
+                [[7]],
+                dtype=torch.long,
+                device=emotion_ids.device).expand(emotion_ids.shape[0], 1)
+            emotion_ids = torch.cat((emotion_ids, emotion_pad), dim=-1)
 
             if eos_token_ids is not None:
                 for eos_token_id in eos_token_ids:

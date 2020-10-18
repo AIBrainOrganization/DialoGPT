@@ -45,10 +45,13 @@ def load(vocab_path, model_path, reverse_path):
   
 
 # 각 답변의 점수를 계산합니다.
-def _score_response(input, input_reversed, output, model, reverse_model): 
+def _score_response(input, input_reversed, emotion_input, output, model, reverse_model): 
   #input, label, mask를 준비합니다.
   #output_reversed = output.to(device_r)
   inputs = torch.cat((input, output[:, :-1]), dim=1)
+  emotion_pad = torch.tensor([[7] * (inputs.shape[1] - emotion_input.shape[1])],
+      dtype=torch.long).to(device_f)
+  emotion_ids = torch.cat((emotion_input, emotion_pad), dim=1)
   # inputs_reversed = torch.cat((output_reversed, input_reversed[:, :-1]), dim=1)
   mask = torch.full_like(input[:, :-1], -1, dtype=torch.long)
   labels = torch.cat((mask, output), dim=1)
@@ -57,7 +60,7 @@ def _score_response(input, input_reversed, output, model, reverse_model):
   # labels_reversed = torch.cat((mask_reversed, input_reversed), dim=1)
 
   # 점수로 활용될 loss 값을 계산합니다.
-  loss, *_ = model(inputs, labels=labels)
+  loss, *_ = model(inputs, labels=labels, emotion_ids=emotion_ids)
   # reverse_loss, *_ = reverse_model(inputs_reversed, labels=labels_reversed)
 
   # ALPHA 값으로 비중을 주고 loss를 점수로 변경하기 위해 -1을 곱해줍니다.
@@ -75,18 +78,20 @@ def append_messages(old_list: list, new_list: list, vocab, end_token,
       message = ' '.join(message_split[:-1])
       # 문장을 tokenizing합니다.
       input_token = torch.tensor([vocab[tokenizer(message)]], dtype=torch.long)
-      emotion_token = torch.tensor([vocab[[emotion_str]]], dtype=torch.long)
+      emotion_token = torch.tensor([vocab[[emotion_str]] * (input_token.shape[1] + 1)],
+          dtype=torch.long)
+      emotion_token -= 6
 
-      input_token = torch.cat((input_token, emotion_token, end_token), dim=1)
-      old_list.append(input_token)
+      input_token = torch.cat((input_token, end_token), dim=1)
+      old_list.append((input_token, emotion_token))
 
   if len(old_list) == 0:
-    old_list.append(end_token)
+    old_list.append((end_token, end_token))
 
   # truncate
   total_length = 0
   for i, message in enumerate(reversed(old_list)):
-    total_length += message.shape[1]
+    total_length += message[0].shape[1]
     if total_length > truncate_length:
       old_list[:] = old_list[-i:]
 
@@ -112,7 +117,10 @@ def decode(ids, vocab, skip_special_tokens=True):
 # 답변 문장을 생성합니다.
 def generate_message(message_list: list, model, reverse_model, vocab,
                      focus_last_message=True):
+  emotion_list = [message[1] for message in message_list]
+  message_list = [message[0] for message in message_list]
   total_input = torch.cat(message_list, dim=1).to(device_f)
+  emotion_input = torch.cat(emotion_list, dim=1).to(device_f)
 #  if focus_last_message:
 #    total_input_reversed = message_list[-1]
 #  else:
@@ -121,6 +129,7 @@ def generate_message(message_list: list, model, reverse_model, vocab,
   # https://huggingface.co/transformers/main_classes/model.html?highlight=generate#transformers.PreTrainedModel.generate
   # 후보 답변 문장들을 생성합니다.
   outputs = model.generate(input_ids=total_input,
+                           emotion_ids=emotion_input,
                            max_length=total_input.shape[1] + 40,
                            num_return_sequences=num_samples,
                            top_k=top_k,
@@ -141,6 +150,7 @@ def generate_message(message_list: list, model, reverse_model, vocab,
       pass
     scores.append(_score_response(
         total_input, None, #total_input_reversed.to(device_r),
+        emotion_input,
         output,
         model, reverse_model))
   scores = torch.stack(scores, dim=0)

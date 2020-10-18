@@ -30,6 +30,7 @@ vad_768 = torch.FloatTensor(torch.cat((vad_zero, vad), -1))
 vad_fill = vad.repeat(1,42)
 vad_zeros = torch.zeros(7, 2)
 vad_fill_128 = torch.cat((vad_zeros, vad_fill), -1)
+vad_fill_128 = torch.cat((vad_fill_128, torch.mean(vad_fill_128, dim=0).unsqueeze(0)))
 
 def embeddingposition(input, weight, padding_idx=None, max_norm=None, norm_type=2.,
               scale_grad_by_freq=False, sparse=False):
@@ -286,7 +287,7 @@ def embeddingemotion_repeat(input, weight, padding_idx=None, max_norm=None, norm
     batch = 64
 
     emotion_table = vad_fill_128
-    emotion_table = emotion_table.cuda()
+    emotion_table = emotion_table.cuda().to(weight.dtype)
     return emotion_table[input, :]
 
 class EmbeddingEmotion(Module):

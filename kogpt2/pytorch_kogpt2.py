@@ -80,18 +80,18 @@ def get_kogpt2_model(model_file, vocab_file, ctx="cpu"):
   kogpt2model = GPT2LMHeadModel(config=GPT2Config.from_dict(kogpt2_config))
   d = torch.load(model_file)
   d = remove_module(d)
-  d = load_pretrained_model(d)
+  #d = load_pretrained_model(d)
   #print("d's state_dict: ")
-  for param_tensor in d.state_dict():
+  #for param_tensor in d.state_dict():
   #print(param_tensor, "\t", d.state_dict()[param_tensor].size())
 
-  for param_tensor in kogpt2model.state_dict():
-    print(param_tensor, "\t", kogpt2model.state_dict()[param_tensor].size())
+  #for param_tensor in kogpt2model.state_dict():
+  #  print(param_tensor, "\t", kogpt2model.state_dict()[param_tensor].size())
   
   kogpt2model.load_state_dict(d, strict=False)
-  model_file = '/data/pytorch_kogpt2_676e9bcfa7.params'
-  d_load = load_pretrained_model(kogpt2model, model_file)
-  kogpt2model.load_state_dict(d, strict=False)
+  #model_file = '/data/pytorch_kogpt2_676e9bcfa7.params'
+  #d_load = load_pretrained_model(kogpt2model, model_file)
+  #kogpt2model.load_state_dict(d, strict=False)
   device = torch.device(ctx)
   kogpt2model.to(device)
   kogpt2model.eval()
@@ -103,4 +103,10 @@ def get_kogpt2_model(model_file, vocab_file, ctx="cpu"):
                                                        padding_token='<pad>',
                                                        bos_token='<s>',
                                                        eos_token='</s>')
+  emotion_list = ['neutral', 'happiness', 'surprise', 'disgust', 'angry', 'fear', 'sadness'] # unused 6 ~ 12와 같음
+  for i, emo in enumerate(emotion_list):
+    vocab_b_obj.token_to_idx['<{}>'.format(emo)] = vocab_b_obj.token_to_idx[
+        "<unused{}>".format(i)]
+    del vocab_b_obj.token_to_idx["<unused{}>".format(i)]
+    vocab_b_obj.idx_to_token[i+6] = '<{}>'.format(emo)  # idx -> token list 수정
   return kogpt2model, vocab_b_obj
