@@ -13,8 +13,6 @@ COPY KoGPT2/requirements.txt /root/requirements.txt
 RUN conda env create -f /root/LSP-linux.yml -n LSP
 RUN conda run -n LSP pip install -r /root/requirements.txt
 RUN conda run -n LSP pip install flask
-COPY KoGPT2 /git/KoGPT2
-RUN conda run -n LSP pip install /git/KoGPT2
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
 ENV FLASK_APP=server.py
