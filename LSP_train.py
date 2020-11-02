@@ -20,13 +20,14 @@ import numpy as np
 from os.path import join
 from torch.distributed import get_rank, get_world_size
 
-from lsp_model import GPT2LMHeadModel, GPT2Tokenizer, GPT2Config, Adam
-from gpt2_training.train_utils import load_model, boolean_string, set_lr, get_eval_list_same_length
+from lsp_model import Adam
+from gpt2_training.train_utils import boolean_string, set_lr
 from gpt2_training.eval_utils import eval_model_loss
 
-from data_loader import BucketingDataLoader, DynamicBatchingLoader, DistributedBucketingDataLoader
+from data_loader import BucketingDataLoader, DistributedBucketingDataLoader
 
-from gpt2_training.distributed import all_reduce_and_rescale_tensors, all_gather_list
+from gpt2_training.distributed import (all_reduce_and_rescale_tensors,
+                                       all_gather_list)
 
 from kogpt2.pytorch_kogpt2 import get_pytorch_kogpt2_model
 from kogpt2.pytorch_kogpt2 import kogpt2_config as config
@@ -310,7 +311,7 @@ if args.local_rank == -1 or get_rank() == 0:
   if args.pbar:
     pbar = tqdm.tqdm(initial=global_step,
                      total=args.num_optim_steps,
-                     desc=f"training")
+                     desc='training')
   else:
     pbar = None
 

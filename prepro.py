@@ -30,8 +30,9 @@ import pandas as pd
 
 
 def _get_file_len(corpus):
-  n_line = int(sp.check_output(f"wc -l {corpus}".split(),
-                               universal_newlines=True).split()[0])
+  n_line = int(
+      sp.check_output(f"wc -l {corpus}".split(),
+                      universal_newlines=True).split()[0])
   return n_line
 
 
@@ -141,8 +142,8 @@ def _make_feature(id_, sents, ws, eos):
     weights.append(0.0)
 
   position_ids = list(range(len(input_ids)))
-  assert (len(input_ids) == len(position_ids) == len(token_type_ids)
-          == len(lm_labels) == len(weights))
+  assert (len(input_ids) == len(position_ids) == len(token_type_ids) ==
+          len(lm_labels) == len(weights))
   assert len(input_ids) % 8 == 0
   if len(input_ids) == 0:
     import pdb
@@ -185,7 +186,7 @@ def main(args):
     # if rsock.state != rsock.ST_CONNECTED:
     #   input()
 
-    for _, line in tqdm(reader.iterrows()):
+    for _, line in tqdm(reader.iterrows(), total=len(reader.index)):
       try:
         if len(chunk) >= args.chunk_size:
           # save and renew chunk
@@ -203,8 +204,8 @@ def main(args):
           inputs = inputs[:2]
         if len(weights) < 2:
           continue
-        features = _make_features(n_example, weights, inputs,
-                                  toker, vocab, args.max_seq_len)
+        features = _make_features(n_example, weights, inputs, toker, vocab,
+                                  args.max_seq_len)
         for feature in features:
           chunk.append(vars(feature))
           n_example += 1
@@ -212,14 +213,15 @@ def main(args):
         print('!!! prepro exception !!!', e)
         continue
     # save last chunk
-    db[f'chunk_{n_chunk}'] = gzip.compress(
-        json.dumps(chunk).encode('utf-8'))
+    db[f'chunk_{n_chunk}'] = gzip.compress(json.dumps(chunk).encode('utf-8'))
   # save relevant information to reproduce
-  meta = {'n_example': n_example,
-          'chunk_size': args.chunk_size,
-          'max_seq_len': args.max_seq_len,
-          'reverse': args.reverse,
-          'two_turn': args.two_turn}
+  meta = {
+      'n_example': n_example,
+      'chunk_size': args.chunk_size,
+      'max_seq_len': args.max_seq_len,
+      'reverse': args.reverse,
+      'two_turn': args.two_turn
+  }
   with open(join(dirname(db_path), 'meta.json'), 'w') as writer:
     json.dump(meta, writer, indent=4)
   # torch.save(toker, join(dirname(db_path), 'tokenizer.pt'))
@@ -227,15 +229,22 @@ def main(args):
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
-  parser.add_argument('--corpus', required=True,
+  parser.add_argument('--corpus',
+                      required=True,
                       help='file name of training corpus (should be .tsv)')
-  parser.add_argument('--chunk_size', type=int, default=65536,
+  parser.add_argument('--chunk_size',
+                      type=int,
+                      default=65536,
                       help='num of data examples in a storing chunk')
-  parser.add_argument('--max_seq_len', type=int, default=128,
+  parser.add_argument('--max_seq_len',
+                      type=int,
+                      default=128,
                       help='discard data longer than this')
-  parser.add_argument('--reverse', action='store_true',
+  parser.add_argument('--reverse',
+                      action='store_true',
                       help='reverse the src tgt')
-  parser.add_argument('--two_turn', action='store_true',
+  parser.add_argument('--two_turn',
+                      action='store_true',
                       help='take only the first 2 turns')
 
   args = parser.parse_args()
