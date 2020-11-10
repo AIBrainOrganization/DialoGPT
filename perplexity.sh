@@ -1,0 +1,2 @@
+#!/bin/bash
+python perplexity.py --eval_input_file data/test.200len.db --output_dir models/dcinside/10/valid --seed 42 --max_seq_length 200 --train_batch_size 512 --gradient_accumulation_steps 8 --learning_rate 1e-5 --num_optim_steps 310400 --valid_step 7760 --warmup_steps 7760 --normalize_data true --fp16 true --lr_schedule noam --loss_scale 0.0 --no_token_id true --pbar true --init_checkpoint models/dcinside/10/fine/GPT2.1e-05.64.2gpu.2020-11-02130231/GP2-pretrain-step-43520.pkl
