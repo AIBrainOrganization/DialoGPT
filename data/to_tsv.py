@@ -3,14 +3,10 @@ from tqdm import tqdm
 
 import pandas as pd
 
-import argparse
-
-import sys
-sys.path.append('/home/calee/git/dcinside')
-from filter import Comment
-from filter import filter_rows
-from filter import add_tags
-from clean import clean_str
+from dcinside.filter import Comment
+from dcinside.filter import filter_rows
+from dcinside.filter import add_tags
+from dcinside.clean import clean_str
 
 
 def create_rows(xlsxes):
@@ -24,7 +20,7 @@ def create_rows(xlsxes):
     firstSSeen = False
     wb = load_workbook(xlsx)
     ws = wb.active
-    for i, row in enumerate(tqdm(ws.rows)):
+    for i, row in enumerate(tqdm(ws.rows, total=ws.max_row)):
       if not firstSSeen:
         if row[0].value == 'S':
           firstSSeen = True
@@ -59,18 +55,22 @@ def create_rows(xlsxes):
 
 
 def main():
-  xlsxes = ['/home/calee/git/cc/data/KoMulti20200320/'
-            'OpenSubwithemotion2018.xlsx',
-            '/home/calee/git/cc/data/KoMulti20200320/'
-            'acryl_korean_190226_unique.xlsx',
-            '/home/calee/git/cc/data/KoMulti20200320/'
-            'acryl_korean_180504.xlsx']
+  xlsxes = [
+      '/home/calee/git/cc/data/KoMulti20200320/'
+      'OpenSubwithemotion2018.xlsx', '/home/calee/git/cc/data/KoMulti20200320/'
+      'acryl_korean_190226_unique.xlsx',
+      '/home/calee/git/cc/data/KoMulti20200320/'
+      'acryl_korean_180504.xlsx'
+  ]
   rows = create_rows(xlsxes)
+
+  import pdb
+  pdb.set_trace()
 
   filtered = [filter_rows(r) for r in rows]
 
   df = [pd.DataFrame(f) for f in filtered]
-  names = ['train_bland.tsv', 'valid_bland.tsv', 'test_bland.tsv']
+  names = ['train_bland_.tsv', 'valid_bland_.tsv', 'test_bland_.tsv']
   for i, d in enumerate(df):
     d.to_csv(names[i], sep='\t', header=False, index=False)
 

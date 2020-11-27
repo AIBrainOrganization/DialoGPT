@@ -156,11 +156,11 @@ else:
                                             bool(args.local_rank != -1),
                                             args.fp16))
 
-np.random.seed(args.seed)
-torch.random.manual_seed(args.seed)
-torch.cuda.manual_seed(args.seed)
-if n_gpu > 0:
-  torch.cuda.manual_seed_all(args.seed)
+# np.random.seed(args.seed)
+# torch.random.manual_seed(args.seed)
+# torch.cuda.manual_seed(args.seed)
+# if n_gpu > 0:
+#   torch.cuda.manual_seed_all(args.seed)
 
 timestamp = datetime.datetime.now().strftime('%Y-%m-%d%H%M%S')
 output_dir = join(
@@ -213,7 +213,6 @@ def eval_model_loss(model, tokenizer, eval_dataloader, args, vocab):
   model.eval()
   inputs = []
   tot_ppl = []
-  random.seed(0)
   selected = random.sample(range(136395), 1000)
   with torch.no_grad():
     for step, batch in enumerate(tqdm(eval_dataloader, total=136395)):
