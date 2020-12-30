@@ -1,204 +1,184 @@
-import json
-from os.path import abspath, dirname, exists, join
-import argparse
-import logging
-from tqdm import trange
-import tqdm
 import torch
-import torch.nn.functional as F
-import numpy as np
-import socket
-import os, sys
-import re
-import logging
-from functools import partial
-from demo_utils import download_model_folder
 import argparse
-import subprocess as sp
 
-from pytorch_pretrained_bert import GPT2LMHeadModel, GPT2Tokenizer, GPT2Config
-from gpt2_training.train_utils import get_eval_list_same_length, load_model, boolean_string, fix_state_dict_namespace
+from config import device_f, device_r, num_samples
+from config import top_k, top_p, ALPHA
+from kogpt2.pytorch_kogpt2 import get_kogpt2_model
+from gluonnlp.data import SentencepieceTokenizer
+from kogpt2.utils import get_tokenizer
 
-logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                    datefmt = '%m/%d/%Y %H:%M:%S',
-                    level = logging.INFO)
-logger = logging.getLogger(__name__)
+PADDING_TOKEN = 0
 
+torch.set_grad_enabled(False)
 
-EOS_ID = 50256
-
-
-def cut_seq_to_eos(sentence, remove_id=[-1]):
-    sent=[]
-    for s in sentence:
-        if s in remove_id:
-            continue
-        if s != EOS_ID:
-            sent.append(s)
-        else:
-            break
-    return sent
+# 토크나이저를 불러옵니다.
+tok_path = get_tokenizer()
+tokenizer = SentencepieceTokenizer(tok_path)
 
 
-### FROM HUGGING FACE REPO
-def top_filtering(logits, top_k=0, top_p=0.0, threshold=-float('Inf'), filter_value=-float('Inf')):
-    """ Filter a distribution of logits using top-k, top-p (nucleus) and/or threshold filtering
-        Args:
-            logits: logits distribution shape (vocabulary size)
-            top_k: <=0: no filtering, >0: keep only top k tokens with highest probability.
-            top_p: <=0.0: no filtering, >0.0: keep only a subset S of candidates, where S is the smallest subset
-                whose total probability mass is greater than or equal to the threshold top_p.
-                In practice, we select the highest probability tokens whose cumulative probability mass exceeds
-                the threshold top_p.
-            threshold: a minimal threshold to keep logits
-    """
-    assert logits.dim() == 1  # Only work for batch size 1 for now - could update but it would obfuscate a bit the code
-    top_k = min(top_k, logits.size(-1))
-    if top_k > 0:
-        # Remove all tokens with a probability less than the last token in the top-k tokens
-        indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
-        logits[indices_to_remove] = filter_value
+# 사전, 모델, 리버스 모델을 불러옵니다.
+def load(vocab_path, model_path, reverse_path):
+  # 모델과 사전을 불러옵니다.
+  model, vocab = get_kogpt2_model(model_path, vocab_path, 0)
 
-    if top_p > 0.0:
-        # Compute cumulative probabilities of sorted tokens
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-        cumulative_probabilities = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+  if device_f == 'cuda':
+    model.half()
+  model.to(device_f)
+  model.eval()
 
-        # Remove tokens with cumulative probability above the threshold
-        sorted_indices_to_remove = cumulative_probabilities > top_p
-        # Shift the indices to the right to keep also the first token above the threshold
-        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-        sorted_indices_to_remove[..., 0] = 0
+  # 리버스 모델을 불러옵니다.
+  reverse_model, _ = get_kogpt2_model(reverse_path, vocab_path, 0)
+  if device_r == 'cuda':
+    reverse_model.half()
+  reverse_model.to(device_r)
+  reverse_model.eval()
 
-        # Back to unsorted indices and set them to -infinity
-        indices_to_remove = sorted_indices[sorted_indices_to_remove]
-        logits[indices_to_remove] = filter_value
+  end_token = torch.tensor([[vocab[vocab.eos_token]]], dtype=torch.long)
 
-    indices_to_remove = logits < threshold
-    logits[indices_to_remove] = filter_value
-    return logits
-
-def generate_next_token(model, input_ids, position_ids=None, token_type_ids=None, prev=None, temperature=1, top_k=0, top_p=0, past=None):
-    with torch.no_grad():
-        if not past:
-            hidden_states, past = model.transformer(prev, position_ids, token_type_ids, past=past)
-        else:
-            hidden_states, past = model.transformer(prev, past=past)
-        logits = model.lm_head(hidden_states)
-        logits = logits[0, -1, :] / temperature
-        logits = top_filtering(logits, top_k=top_k, top_p=top_p)
-        probs = F.softmax(logits.unsqueeze(0), dim=-1)
-        prev = torch.multinomial(probs, num_samples=1)
-        return prev, probs[0][prev], past
-
-def generate_sequence(model, input_ids, position_ids=None, token_type_ids=None, temperature=1, top_k=0, top_p=0, length=20, past=None, device='cuda'):
-    output = input_ids.new_zeros([input_ids.size(0),0])
-    prev = input_ids
-    for i in range(length):
-        prev, probs, past = generate_next_token(model, input_ids, position_ids, token_type_ids, prev, temperature, top_k, top_p, past)
-        output = torch.cat((output, prev), dim=1)
-    return output
-
-def cut_seq_to_eos(sentence, remove_id=[-1]):
-    sent=[]
-    for s in sentence:
-        if s in remove_id:
-            continue
-        if s != EOS_ID:
-            sent.append(s)
-        else:
-            break
-    return sent
+  return vocab, model, reverse_model, end_token
 
 
-def run_model():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model_name_or_path', type=str, default='', help='pretrained model name or path to local checkpoint')
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--load_checkpoint", '-c', type=str, default='')
-    parser.add_argument("--fp16", type=boolean_string, default=False)
-    parser.add_argument("--max_seq_length", type=int, default=128)
-    
-    parser.add_argument("--generation_length", type=int, default=20)
-    parser.add_argument("--max_history", type=int, default=2)
+# 각 답변의 점수를 계산합니다.
+def _score_response(input, input_reversed, output, model, reverse_model):
+  # input, label, mask를 준비합니다.
+  output_reversed = output.to(device_r)
+  inputs = torch.cat((input, output[:, :-1]), dim=1)
+  inputs_reversed = torch.cat((output_reversed, input_reversed[:, :-1]), dim=1)
+  mask = torch.full_like(input[:, :-1], -1, dtype=torch.long)
+  labels = torch.cat((mask, output), dim=1)
+  mask_reversed = torch.full_like(output_reversed[:, :-1],
+                                  -1,
+                                  dtype=torch.long)
+  labels_reversed = torch.cat((mask_reversed, input_reversed), dim=1)
 
-    parser.add_argument("--temperature", type=float, default=1)
-    parser.add_argument("--top_k", type=int, default=0)
-    parser.add_argument("--top_p", type=float, default=0.9)
+  # 점수로 활용될 loss 값을 계산합니다.
+  loss, *_ = model(inputs, labels=labels)
+  reverse_loss, *_ = reverse_model(inputs_reversed, labels=labels_reversed)
 
-    parser.add_argument('--use_gpu', action='store_true')
-    parser.add_argument("--gpu", type=int, default=0)
-
-    args = parser.parse_args()
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
+  # ALPHA 값으로 비중을 주고 loss를 점수로 변경하기 위해 -1을 곱해줍니다.
+  return -(ALPHA * loss.float() + (1 - ALPHA) * reverse_loss.float())
 
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.use_gpu else "cpu")
-    n_gpu = torch.cuda.device_count()
-    args.device, args.n_gpu = device, n_gpu
+# 히스토리에 새 문장을 추가해줍니다.
+def append_messages(old_list: list,
+                    new_list: list,
+                    vocab,
+                    end_token,
+                    truncate_length=64):
+  for message in new_list:
+    if message != '':
+      # 문장을 tokenizing합니다.
+      input_token = torch.tensor([vocab[tokenizer(message)]], dtype=torch.long)
+      input_token = torch.cat((input_token, end_token), dim=1)
+      old_list.append(input_token)
 
-    np.random.seed(args.seed)
-    torch.random.manual_seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
+  if len(old_list) == 0:
+    old_list.append(end_token)
 
-    #### load the GPT-2 model 
-    config = GPT2Config.from_json_file(os.path.join(args.model_name_or_path, 'config.json'))
-    enc = GPT2Tokenizer.from_pretrained(args.model_name_or_path)
-    model = load_model(GPT2LMHeadModel(config), args.load_checkpoint, args, verbose=True)
-    model.to(device)
-    model.eval()
+  # truncate
+  total_length = 0
+  for i, message in enumerate(reversed(old_list)):
+    total_length += message.shape[1]
+    if total_length > truncate_length:
+      old_list[:] = old_list[-i:]
 
-    history = []
-    while True:
-        raw_text = input("USR >>> ")
-        while not raw_text:
-            print('Prompt should not be empty!')
-            raw_text = input("USR >>> ")
-        history.append(raw_text)
-        context_tokens = sum([enc.encode(h) + [EOS_ID] for h in history],[]) #+ [EOS_ID]
-        context_tokens = torch.tensor(context_tokens, device=device, dtype=torch.long).unsqueeze(0)
-        position_ids = torch.arange(0, context_tokens.size(-1), dtype=torch.long, device=context_tokens.device)
 
-        out = generate_sequence(model, context_tokens, position_ids=position_ids,
-                                length=args.generation_length, temperature=args.temperature, 
-                                top_k=args.top_k, top_p= args.top_p) 
+# 생성된 token들을 문장으로 바꿔줍니다.
+def decode(ids, vocab, skip_special_tokens=True):
+  gen = vocab.to_tokens(ids)
+  sent = ''
+  for word in gen:
+    word = word.replace('▁', ' ')
+    word = word.replace(' !', '!')
+    word = word.replace(' .', '.')
+    word = word.replace(' ?', '?')
+    word = word.replace(' ,', ',')
+    if skip_special_tokens:
+      word = word.replace('<unk>', '')
+      word = word.replace('<s>', '')
+      word = word.replace('</s>', '')
+    sent += word
+  return sent[1:]
 
-        out = out.tolist()                        
-        text = enc.decode(cut_seq_to_eos(out[0])).encode('ascii','ignore').decode('ascii')
-        print("SYS >>> ", text)
-        history.append(text)
-        history = history[-(2*args.max_history+1):]
+
+# 답변 문장을 생성합니다.
+def generate_message(message_list: list,
+                     model,
+                     reverse_model,
+                     vocab,
+                     focus_last_message=True):
+  total_input = torch.cat(message_list, dim=1).to(device_f)
+  if focus_last_message:
+    total_input_reversed = message_list[-1]
+  else:
+    total_input_reversed = torch.cat(list(reversed(message_list)), dim=1)
+
+  # https://huggingface.co/transformers/main_classes/model.html?highlight=generate#transformers.PreTrainedModel.generate
+  # 후보 답변 문장들을 생성합니다.
+  outputs = model.generate(input_ids=total_input,
+                           min_length=total_input.shape[1] + 8,
+                           max_length=total_input.shape[1] + 40,
+                           num_return_sequences=num_samples,
+                           top_k=top_k,
+                           top_p=top_p,
+                           do_sample=True,
+                           repetition_penalty=1.2,
+                           pad_token_id=PADDING_TOKEN,
+                           eos_token_id=vocab[vocab.eos_token])
+  outputs = outputs[:, total_input.shape[1]:]
+
+  # 각 문장에 대해 점수를 계산합니다.
+  scores = []
+  for output in outputs:
+    output = output.unsqueeze(0).to(device_f)
+    try:
+      output = output[:, :output[0].tolist().index(vocab[vocab.eos_token]) + 1]
+    except Exception:
+      pass
+    scores.append(
+        _score_response(total_input, total_input_reversed.to(device_r), output,
+                        model, reverse_model))
+  scores = torch.stack(scores, dim=0)
+
+  # 가장 점수가 높은 문장을 선택합니다.
+  winner = torch.argmax(scores).item()
+  out = outputs[winner]
+
+  return decode(out.tolist(), vocab)
+
 
 if __name__ == '__main__':
+  parser = argparse.ArgumentParser(description='Interact with the model.')
+  parser.add_argument('vocab_path',
+                      metavar='vocab_path',
+                      type=str,
+                      help='Vocabulary path')
+  parser.add_argument('model_path',
+                      metavar='model_path',
+                      type=str,
+                      help='Model path')
+  parser.add_argument('reverse_model_path',
+                      metavar='reverse_model_path',
+                      type=str,
+                      help='Reverse model path')
 
-    PYTHON_EXE = 'python'
-    MODEL_FOLDER = './models'
-    DATA_FOLDER = './data'
+  args = parser.parse_args()
 
-    logging.basicConfig(
-        format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-        datefmt='%m/%d/%Y %H:%M:%S', level=logging.INFO
-    )
-    logger = logging.getLogger(__name__)
+  # 사전, 모델 파일 및 end_token을 불러옵니다.
+  vocab, model, reverse_model, end_token = load(args.vocab_path,
+                                                args.model_path,
+                                                args.reverse_model_path)
 
+  my_message_list = []  # 대화 히스토리 리스트
+  while True:
+    my_message = input('usr >> ')
+    # 대화 히스토리에 사용자가 입력한 내용을 추가합니다.
+    append_messages(my_message_list, [my_message], vocab, end_token)
 
-    if os.path.exists(MODEL_FOLDER):
-        print('Found existing ./models folder, skip creating a new one!')
-        os.makedirs(MODEL_FOLDER, exist_ok=True)
-    else:
-        os.makedirs(MODEL_FOLDER)
+    # 대화 히스토리를 바탕으로 답변을 생성합니다.
+    my_response = generate_message(my_message_list, model, reverse_model,
+                                   vocab, False)
+    print('bot >>', my_response)
 
-    #########################################################################
-    # Download Model
-    #########################################################################
-    logger.info('Downloading models...')
-    download_model = partial(download_model_folder, DATA_FOLDER=MODEL_FOLDER)
-
-    # model size:  could be one of 'small' (GPT2 with 117M), 'medium'(345M) or 'large' (1542M)
-    # dataset: one of 'multiref' or 'dstc'
-    # from_scratch: True : load model trained from scratch or False: load model trained from fine-tuning the GPT-2
-    target_folder = download_model(model_size='medium', dataset='multiref', from_scratch=False)
-    logger.info('Done!\n')
-    
-    run_model()
-
+    # 답변을 대화 히스토리에 추가합니다.
+    append_messages(my_message_list, [my_response], vocab, end_token)
