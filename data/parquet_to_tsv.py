@@ -7,9 +7,7 @@ import json
 import os
 
 from dcinside import filter as dcinside_filter
-from dcinside.filter import Comment
 from dcinside.filter import filter_rows
-from dcinside.filter import add_tags
 from dcinside.clean import clean
 
 
@@ -19,7 +17,9 @@ def create_rows(input_path):
   test = []
 
   df = pd.read_parquet(input_path)
-  for index, row in tqdm(df.iterrows(), total=len(df.index), desc='create_rows'):
+  for index, row in tqdm(df.iterrows(),
+                         total=len(df.index),
+                         desc='create_rows'):
     try:
       doc = json.loads(row.contents)
       cleaned = clean(doc)
@@ -50,7 +50,10 @@ def main():
   df = [pd.DataFrame(f) for f in filtered]
   names = ['train_bland.tsv', 'valid_bland.tsv', 'test_bland.tsv']
   for i, d in enumerate(df):
-    d.to_csv(os.path.join(args.output, names[i]), sep='\t', header=False, index=False)
+    d.to_csv(os.path.join(args.output, names[i]),
+             sep='\t',
+             header=False,
+             index=False)
 
 
 if __name__ == '__main__':
